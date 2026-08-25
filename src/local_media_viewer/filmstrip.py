@@ -3,10 +3,28 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImageReader, QPixmap
+from PySide6.QtGui import QIcon, QImageReader, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QToolButton, QWidget
 
 from local_media_viewer.media import VIDEO_EXTENSIONS
+
+
+class FilmstripScrollArea(QScrollArea):
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        pixels = event.pixelDelta()
+        if not pixels.isNull():
+            delta = pixels.y() if pixels.y() else pixels.x()
+            self.scroll_horizontal(delta)
+        else:
+            angles = event.angleDelta()
+            delta = angles.y() if angles.y() else angles.x()
+            step = max(40, self.horizontalScrollBar().singleStep() * 3)
+            self.scroll_horizontal(round(delta / 120 * step))
+        event.accept()
+
+    def scroll_horizontal(self, delta: int) -> None:
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - delta)
 
 
 class Filmstrip(QWidget):
@@ -25,7 +43,7 @@ class Filmstrip(QWidget):
         self.row.setSpacing(6)
         self.row.addStretch()
 
-        self.scroll = QScrollArea()
+        self.scroll = FilmstripScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)

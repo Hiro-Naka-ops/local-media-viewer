@@ -8,7 +8,16 @@ from time import perf_counter
 from PIL import Image
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QByteArray, QTimer, Qt, QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent, QKeyEvent, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeyEvent,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,8 +51,9 @@ from local_media_viewer.viewer import ImageView, VideoView
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, initial_path: Path | None = None) -> None:
         super().__init__()
+        self.initializing = True
         self.settings = load_settings()
         self.current_folder: Path | None = None
         self.files: list[Path] = []
@@ -69,6 +79,7 @@ class MainWindow(QMainWindow):
         self.video_view.navigate.connect(self.navigate)
         self.video_view.play_pause_requested.connect(self.toggle_video_playback)
         self.video_view.volume_change_requested.connect(self.change_volume)
+        self.video_view.seek_requested.connect(self.seek_video)
         self.image_view.fullscreen_requested.connect(self.toggle_fullscreen)
         self.video_view.fullscreen_requested.connect(self.toggle_fullscreen)
 
@@ -79,9 +90,12 @@ class MainWindow(QMainWindow):
         self.audio = QAudioOutput(self)
         self.audio.setVolume(self.settings.volume / 100)
         self.player = QMediaPlayer(self)
+        self.player.setLoops(QMediaPlayer.Loops.Infinite)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video_view)
+        self.player.setVideoOutput(self.video_view.surface)
         self.player.errorOccurred.connect(self.video_error)
+        self.player.positionChanged.connect(self.video_view.update_position)
+        self.player.durationChanged.connect(self.video_view.update_duration)
 
         self.filter_panel = self.create_filter_panel()
         self.splitter = QSplitter()
@@ -100,7 +114,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
         self.create_toolbar()
-        self.restore_state()
+        self.restore_state(initial_path)
+        self.initializing = False
 
     def create_toolbar(self) -> None:
         self.toolbar = QToolBar("操作")
@@ -110,7 +125,26 @@ class MainWindow(QMainWindow):
         open_folder = QAction("フォルダを開く", self)
         previous = QAction("前へ", self)
         next_item = QAction("次へ", self)
+        previous.setShortcuts(
+            [
+                QKeySequence(Qt.Key.Key_Left),
+                QKeySequence(Qt.Key.Key_Up),
+            ]
+        )
+        next_item.setShortcuts(
+            [
+                QKeySequence(Qt.Key.Key_Right),
+                QKeySequence(Qt.Key.Key_Down),
+            ]
+        )
+        previous.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        next_item.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        previous.setToolTip("前へ (← / ↑)")
+        next_item.setToolTip("次へ (→ / ↓)")
         fit = QAction("フィット／原寸", self)
+        fit.setShortcut(QKeySequence(Qt.Key.Key_Space))
+        fit.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        fit.setToolTip("フィット／原寸 (Space)")
         open_file.triggered.connect(self.choose_file)
         open_folder.triggered.connect(self.choose_folder)
         previous.triggered.connect(lambda: self.navigate(-1))
@@ -136,6 +170,13 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.toolbar.addWidget(QLabel("音量"))
         self.toolbar.addWidget(self.volume_slider)
+        self.fullscreen_shortcuts = [
+            QShortcut(QKeySequence(Qt.Key.Key_Return), self),
+            QShortcut(QKeySequence(Qt.Key.Key_Enter), self),
+        ]
+        for shortcut in self.fullscreen_shortcuts:
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(self.toggle_fullscreen)
         self.toggle_filter_panel(self.settings.filter_panel_visible)
         self.toggle_filmstrip(self.settings.filmstrip_visible)
 
@@ -199,9 +240,12 @@ class MainWindow(QMainWindow):
         ]:
             slider.setValue(value)
 
-    def restore_state(self) -> None:
+    def restore_state(self, initial_path: Path | None = None) -> None:
         if self.settings.window_geometry:
             self.restoreGeometry(QByteArray.fromBase64(self.settings.window_geometry.encode("ascii")))
+        if initial_path is not None and initial_path.exists():
+            self.open_path(initial_path)
+            return
         last = Path(self.settings.last_path) if self.settings.last_path else None
         if last and last.is_file():
             self.open_path(last)
@@ -254,10 +298,13 @@ class MainWindow(QMainWindow):
         self.persist_settings()
         if path.suffix.lower() in VIDEO_EXTENSIONS:
             self.stack.setCurrentWidget(self.video_view)
+            self.video_view.prepare_media()
             self.player.setSource(QUrl.fromLocalFile(str(path)))
             self.player.play()
+            self.video_view.activate_controls()
         else:
             self.stack.setCurrentWidget(self.image_view)
+            self.video_view.update_duration(0)
             try:
                 self.image = self.preloader.take(path) or load_image(path)
                 self.frame_index = 0
@@ -394,7 +441,13 @@ class MainWindow(QMainWindow):
     def change_volume(self, amount: int) -> None:
         self.volume_slider.setValue(self.volume_slider.value() + amount)
 
+    def seek_video(self, position: int) -> None:
+        self.player.setPosition(position)
+        self.video_view.update_position(position)
+
     def persist_settings(self) -> None:
+        if self.initializing:
+            return
         values = self.filter_values()
         self.settings = ViewerSettings(
             last_path=self.settings.last_path,
@@ -462,6 +515,7 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Local Media Viewer")
-    window = MainWindow()
+    initial_path = next((Path(argument) for argument in sys.argv[1:] if Path(argument).exists()), None)
+    window = MainWindow(initial_path)
     window.show()
     raise SystemExit(app.exec())
