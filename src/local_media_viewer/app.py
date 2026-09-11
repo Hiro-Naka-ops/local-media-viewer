@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import sys
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QByteArray, QTimer, Qt, QUrl
+from PySide6.QtCore import QByteArray, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -23,8 +24,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSlider,
@@ -32,11 +35,14 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import SnappingSlider
+from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail
 from local_media_viewer.filters import FilterValues, apply_filters
 from local_media_viewer.filmstrip import Filmstrip
 from local_media_viewer.media import (
@@ -46,7 +52,13 @@ from local_media_viewer.media import (
     sibling_media_folder,
 )
 from local_media_viewer.preloader import ImagePreloader, load_image
-from local_media_viewer.settings import ViewerSettings, load_settings, save_settings
+from local_media_viewer.settings import (
+    Favorite,
+    ViewerSettings,
+    load_settings,
+    save_settings,
+)
+from local_media_viewer.spread import compose_spread, is_animated
 from local_media_viewer.viewer import ImageView, VideoView
 
 
@@ -68,8 +80,14 @@ class MainWindow(QMainWindow):
         self.animation_cache_limit = 128 * 1024 * 1024
         self.preloader = ImagePreloader()
         self.folder_prompt_open = False
+        self.favorites: list[Favorite] = list(self.settings.favorites)
+        self.spread_second: Image.Image | None = None
+        self.spread_anchor = max(0, self.settings.spread_anchor)
+        self.displayed_pages: list[int] = []
+        self.pending_pan_reset = False
 
         self.setWindowTitle("Local Media Viewer")
+        self.setWindowIcon(app_icon())
         self.resize(1200, 800)
         self.setAcceptDrops(True)
 
@@ -82,6 +100,8 @@ class MainWindow(QMainWindow):
         self.video_view.seek_requested.connect(self.seek_video)
         self.image_view.fullscreen_requested.connect(self.toggle_fullscreen)
         self.video_view.fullscreen_requested.connect(self.toggle_fullscreen)
+        self.image_view.context_menu_requested.connect(self.show_media_menu)
+        self.video_view.context_menu_requested.connect(self.show_media_menu)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.image_view)
@@ -158,6 +178,7 @@ class MainWindow(QMainWindow):
         self.filmstrip_action.setCheckable(True)
         self.filmstrip_action.setChecked(self.settings.filmstrip_visible)
         self.filmstrip_action.toggled.connect(self.toggle_filmstrip)
+        self.option_actions = self.create_option_actions()
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.settings.volume)
@@ -168,6 +189,8 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.toolbar.addActions([self.filter_action, self.filmstrip_action])
         self.toolbar.addSeparator()
+        self.toolbar.addWidget(self.create_favorites_button())
+        self.toolbar.addSeparator()
         self.toolbar.addWidget(QLabel("音量"))
         self.toolbar.addWidget(self.volume_slider)
         self.fullscreen_shortcuts = [
@@ -177,8 +200,56 @@ class MainWindow(QMainWindow):
         for shortcut in self.fullscreen_shortcuts:
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(self.toggle_fullscreen)
+        self.refresh_favorites()
         self.toggle_filter_panel(self.settings.filter_panel_visible)
         self.toggle_filmstrip(self.settings.filmstrip_visible)
+
+    def create_option_actions(self) -> list[QAction]:
+        """Checkable settings shared by the favorites menu and the right-click menu."""
+        self.reset_pan_action = QAction("次の画像で表示位置を戻す", self)
+        self.reset_pan_action.setCheckable(True)
+        self.reset_pan_action.setChecked(self.settings.reset_pan_on_change)
+        self.reset_pan_action.toggled.connect(self.change_reset_pan)
+        self.spread_action = QAction("見開き表示（2ページ）", self)
+        self.spread_action.setCheckable(True)
+        self.spread_action.setChecked(self.settings.spread_view)
+        self.spread_action.toggled.connect(self.toggle_spread)
+        self.spread_rtl_action = QAction("見開きを右送りにする", self)
+        self.spread_rtl_action.setCheckable(True)
+        self.spread_rtl_action.setChecked(self.settings.spread_rtl)
+        self.spread_rtl_action.toggled.connect(self.change_spread_direction)
+        self.spread_here_action = QAction("このページから見開きを開始", self)
+        self.spread_here_action.triggered.connect(self.start_spread_here)
+        return [
+            self.filmstrip_action,
+            self.filter_action,
+            self.reset_pan_action,
+            self.spread_action,
+            self.spread_rtl_action,
+            self.spread_here_action,
+        ]
+
+    def change_reset_pan(self, _enabled: bool) -> None:
+        self.persist_settings()
+
+    def toggle_spread(self, enabled: bool) -> None:
+        if enabled:
+            # The page it was switched on at becomes the first half of the spread.
+            self.spread_anchor = max(0, self.index)
+        self.persist_settings()
+        self.show_current()
+
+    def change_spread_direction(self, _right_to_left: bool) -> None:
+        self.persist_settings()
+        self.show_current()
+
+    def start_spread_here(self) -> None:
+        self.spread_anchor = max(0, self.index)
+        if not self.spread_action.isChecked():
+            self.spread_action.setChecked(True)  # toggle_spread redraws
+            return
+        self.persist_settings()
+        self.show_current()
 
     def create_filter_panel(self) -> QWidget:
         panel = QWidget()
@@ -285,17 +356,55 @@ class MainWindow(QMainWindow):
         self.index = index if index >= 0 else len(files) - 1
         self.show_current()
 
+    def spreadable(self, index: int) -> bool:
+        """Whether a page can be half of a spread.
+
+        Checked before pairing rather than after loading: a pair that silently
+        collapsed to one page would renumber the halves and strand the partner.
+        """
+        path = self.files[index]
+        if path.suffix.lower() in VIDEO_EXTENSIONS:
+            return False
+        try:
+            with Image.open(path) as probe:
+                return not is_animated(probe)
+        except (OSError, ValueError):
+            return False
+
+    def spread_pages(self) -> list[int]:
+        """The one or two file indices that make up the current view.
+
+        Pairs are counted from the page the spread was switched on at, so that
+        page stays the first half and the split never shifts by itself.
+        """
+        if not self.spread_action.isChecked():
+            return [self.index]
+        start = self.index - ((self.index - self.spread_anchor) % 2)
+        pages = [page for page in (start, start + 1) if 0 <= page < len(self.files)]
+        if len(pages) < 2 or not all(self.spreadable(page) for page in pages):
+            return [self.index]
+        return pages
+
+    def load_second_page(self, index: int) -> None:
+        path = self.files[index]
+        try:
+            self.spread_second = self.preloader.take(path) or load_image(path)
+        except (OSError, ValueError):
+            self.spread_second = None
+
     def show_current(self) -> None:
         if not (0 <= self.index < len(self.files)):
             return
+        pages = self.spread_pages()
+        self.index = pages[0]
         path = self.files[self.index]
         self.filmstrip.set_files(self.files)
         self.filmstrip.set_current(self.index)
         self.stop_current()
         self.setWindowTitle(f"{path.name} — Local Media Viewer")
-        self.statusBar().showMessage(f"{self.index + 1} / {len(self.files)}　{path}")
         self.settings.last_path = str(path)
         self.persist_settings()
+        self.displayed_pages = [self.index]
         if path.suffix.lower() in VIDEO_EXTENSIONS:
             self.stack.setCurrentWidget(self.video_view)
             self.video_view.prepare_media()
@@ -307,11 +416,25 @@ class MainWindow(QMainWindow):
             self.video_view.update_duration(0)
             try:
                 self.image = self.preloader.take(path) or load_image(path)
+                if len(pages) > 1:
+                    self.load_second_page(pages[1])
+                    # Keep the pair as the step unit even if the partner
+                    # failed to load, so paging cannot stall on it.
+                    self.displayed_pages = pages
                 self.frame_index = 0
+                self.pending_pan_reset = self.reset_pan_action.isChecked()
                 self.render_frame()
             except (OSError, ValueError) as error:
                 QMessageBox.warning(self, "画像を開けません", f"{path.name}\n{error}")
+        self.show_page_status()
         self.preload_nearby_images()
+
+    def show_page_status(self) -> None:
+        pages = self.displayed_pages or [self.index]
+        numbers = "-".join(str(page + 1) for page in pages)
+        self.statusBar().showMessage(
+            f"{numbers} / {len(self.files)}　{self.files[pages[0]]}"
+        )
 
     def preload_nearby_images(self) -> None:
         nearby: list[Path] = []
@@ -322,6 +445,116 @@ class MainWindow(QMainWindow):
                     if path.suffix.lower() in IMAGE_EXTENSIONS:
                         nearby.append(path)
         self.preloader.preload(nearby)
+
+    def create_favorites_button(self) -> QToolButton:
+        self.favorites_menu = FavoritesMenu()
+        self.favorites_menu.activated.connect(self.open_favorite)
+        self.favorites_menu.remove_requested.connect(self.remove_favorite)
+        self.favorites_menu.move_requested.connect(self.move_favorite)
+        self.favorites_menu.new_group_requested.connect(self.name_new_group)
+        self.favorites_button = QToolButton()
+        # A plain text button that drops its own menu: attaching the menu to the
+        # button instead makes the style paint a stray arrow beside the label.
+        self.favorites_button.setText("お気に入り ▾")
+        self.favorites_button.setToolTip("登録したお気に入りを開く")
+        self.favorites_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.favorites_button.setAutoRaise(True)
+        self.favorites_button.clicked.connect(self.show_favorites_menu)
+        return self.favorites_button
+
+    def show_favorites_menu(self) -> None:
+        button = self.favorites_button
+        corner = button.mapToGlobal(QPoint(0, button.height()))
+        # Trim the popup to the room under the label, so Qt never lifts it
+        # back over the toolbar to make it fit.
+        self.favorites_menu.limit_to(button.screen().availableGeometry().bottom() - corner.y())
+        self.favorites_menu.popup(corner)
+        if self.favorites_menu.pos() != corner:
+            # Qt places the popup from its unconstrained size hint, which lifts a
+            # long list off the label; the trimmed menu does fit, so put it back.
+            self.favorites_menu.move(corner)
+
+    def refresh_favorites(self) -> None:
+        self.favorites_menu.set_favorites(self.favorites, self.option_actions)
+
+    def current_thumbnail(self) -> QPixmap:
+        if self.stack.currentWidget() is self.video_view:
+            return self.video_view.frame_pixmap()
+        return self.image_view.source_pixmap
+
+    def show_media_menu(self, position: QPoint) -> None:
+        if self.current_folder is None:
+            return
+        menu = QMenu(self)
+        register = menu.addAction("お気に入りに登録")
+        menu.addSeparator()
+        menu.addActions(self.option_actions)
+        chosen = menu.exec(position)
+        menu.deleteLater()
+        if chosen is register:
+            self.add_favorite()
+
+    def add_favorite(self) -> None:
+        if self.current_folder is None:
+            return
+        folder = str(self.current_folder)
+        path = self.files[self.index] if 0 <= self.index < len(self.files) else None
+        favorite = Favorite(
+            folder=folder,
+            name=self.current_folder.name or folder,
+            path=str(path) if path is not None else "",
+            thumbnail=encode_thumbnail(self.current_thumbnail()),
+        )
+        # Registering never replaces an entry: the same folder may be saved again.
+        self.favorites = [*self.favorites, favorite]
+        self.refresh_favorites()
+        self.persist_settings()
+        self.statusBar().showMessage(f"お気に入りに登録しました: {favorite.name}", 3000)
+
+    def remove_favorite(self, index: int) -> None:
+        if not 0 <= index < len(self.favorites):
+            return
+        removed = self.favorites[index]
+        self.favorites = self.favorites[:index] + self.favorites[index + 1 :]
+        self.refresh_favorites()
+        self.persist_settings()
+        self.statusBar().showMessage(f"お気に入りから解除しました: {removed.name}", 3000)
+
+    def move_favorite(self, index: int, group: str) -> None:
+        if not 0 <= index < len(self.favorites):
+            return
+        moved = replace(self.favorites[index], group=group)
+        self.favorites = self.favorites[:index] + [moved] + self.favorites[index + 1 :]
+        self.refresh_favorites()
+        self.persist_settings()
+        where = group or "フォルダなし"
+        self.statusBar().showMessage(f"{moved.name} を「{where}」へ移動しました", 3000)
+
+    def name_new_group(self, index: int) -> None:
+        if not 0 <= index < len(self.favorites):
+            return
+        name, accepted = QInputDialog.getText(
+            self, "新しいフォルダ", "お気に入りをまとめるフォルダ名"
+        )
+        if accepted and name.strip():
+            self.move_favorite(index, name.strip())
+
+    def open_favorite(self, index: int) -> None:
+        if not 0 <= index < len(self.favorites):
+            return
+        favorite = self.favorites[index]
+        if favorite.path and Path(favorite.path).is_file():
+            self.open_path(Path(favorite.path))
+            return
+        target = Path(favorite.folder)
+        if not target.is_dir():
+            QMessageBox.information(
+                self,
+                "フォルダなし",
+                f"お気に入りのフォルダが見つかりません。\n{folder}",
+            )
+            return
+        self.open_folder(target, 0)
 
     def select_filmstrip_item(self, index: int) -> None:
         if 0 <= index < len(self.files) and index != self.index:
@@ -340,13 +573,20 @@ class MainWindow(QMainWindow):
         else:
             self.image.seek(self.frame_index)
             frame = self.image.convert("RGBA")
+            if self.spread_second is not None:
+                frame = compose_spread(
+                    frame,
+                    self.spread_second.convert("RGBA"),
+                    self.spread_rtl_action.isChecked(),
+                )
             values = self.filter_values()
             displayed = frame if values == FilterValues() else apply_filters(frame, values)
             pixmap = QPixmap.fromImage(ImageQt(displayed))
             duration = max(20, int(self.image.info.get("duration", 100)))
             if frame_count > 1:
                 self.cache_animation_frame(self.frame_index, pixmap, duration)
-        self.image_view.set_pixmap(pixmap)
+        self.image_view.set_pixmap(pixmap, self.pending_pan_reset)
+        self.pending_pan_reset = False
         if frame_count > 1:
             elapsed_ms = round((perf_counter() - started) * 1000)
             self.animation_timer.start(max(1, duration - elapsed_ms))
@@ -382,7 +622,9 @@ class MainWindow(QMainWindow):
     def navigate(self, direction: int) -> None:
         if self.folder_prompt_open:
             return
-        target = self.index + direction
+        # Step over the whole view, so a spread turns two pages at a time.
+        shown = self.displayed_pages or [self.index]
+        target = shown[-1] + 1 if direction > 0 else shown[0] - 1
         if 0 <= target < len(self.files):
             self.index = target
             self.show_current()
@@ -391,12 +633,7 @@ class MainWindow(QMainWindow):
             return
         folder = sibling_media_folder(self.current_folder, direction)
         if folder is None:
-            label = "次" if direction > 0 else "前"
-            QMessageBox.information(
-                self,
-                f"{label}のフォルダなし",
-                f"{label}方向に表示できる画像・動画を含むフォルダがありません。",
-            )
+            # No neighbouring folder: keep showing the current media instead of warning.
             return
         label = "次" if direction > 0 else "前"
         self.folder_prompt_open = True
@@ -420,6 +657,9 @@ class MainWindow(QMainWindow):
         if self.image is not None:
             self.image.close()
             self.image = None
+        if self.spread_second is not None:
+            self.spread_second.close()
+            self.spread_second = None
 
     def video_error(self, _error: QMediaPlayer.Error, error_string: str) -> None:
         if error_string:
@@ -459,8 +699,18 @@ class MainWindow(QMainWindow):
             filmstrip_visible=self.filmstrip_action.isChecked(),
             volume=self.volume_slider.value(),
             window_geometry=bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            reset_pan_on_change=self.reset_pan_action.isChecked(),
+            spread_view=self.spread_action.isChecked(),
+            spread_rtl=self.spread_rtl_action.isChecked(),
+            spread_anchor=self.spread_anchor,
+            favorites=list(self.favorites),
         )
         save_settings(self.settings)
+
+    def createPopupMenu(self) -> QMenu | None:
+        # QMainWindow offers to hide the toolbar here, and a hidden toolbar cannot
+        # be brought back with the mouse, so the offer is withdrawn.
+        return None
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -513,8 +763,10 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    claim_taskbar_identity()
     app = QApplication(sys.argv)
     app.setApplicationName("Local Media Viewer")
+    app.setWindowIcon(app_icon())
     initial_path = next((Path(argument) for argument in sys.argv[1:] if Path(argument).exists()), None)
     window = MainWindow(initial_path)
     window.show()

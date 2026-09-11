@@ -5,8 +5,24 @@ from math import sqrt
 
 from PIL import Image
 from PIL.ImageQt import ImageQt, fromqimage
-from PySide6.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QTimer, Qt, Signal
-from PySide6.QtGui import QCursor, QMouseEvent, QPainter, QPixmap, QResizeEvent, QWheelEvent
+from PySide6.QtCore import (
+    QEvent,
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    QTimer,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import (
+    QContextMenuEvent,
+    QCursor,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+    QWheelEvent,
+)
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,6 +38,33 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+# Drivers commonly map a tilt wheel onto the back/forward side buttons, so
+# those turn pages too.
+PAGE_BUTTONS = {
+    Qt.MouseButton.BackButton: -1,
+    Qt.MouseButton.ForwardButton: 1,
+}
+
+
+def wheel_direction(event: QWheelEvent) -> int:
+    """Turn a wheel roll or a horizontal tilt into a page step.
+
+    Tilting right moves forward and tilting left moves back, matching the
+    toolbar's 次へ / 前へ regardless of the reading direction. Touchpads and
+    some tilt wheels report pixelDelta only, so both deltas are consulted and
+    an event carrying neither yields 0 rather than a stray page turn.
+    """
+    angles = event.angleDelta()
+    pixels = event.pixelDelta()
+    vertical = angles.y() or pixels.y()
+    if vertical:
+        return 1 if vertical < 0 else -1
+    horizontal = angles.x() or pixels.x()
+    if horizontal:
+        return 1 if horizontal > 0 else -1
+    return 0
 
 
 def format_media_time(milliseconds: int) -> str:
@@ -145,6 +188,7 @@ class VideoControls(QWidget):
 class ImageView(QGraphicsView):
     navigate = Signal(int)
     fullscreen_requested = Signal()
+    context_menu_requested = Signal(QPoint)
 
     def __init__(self) -> None:
         super().__init__()
@@ -166,12 +210,21 @@ class ImageView(QGraphicsView):
         self._left_press_position = None
         self._left_dragged = False
 
-    def set_pixmap(self, pixmap: QPixmap) -> None:
+    def set_pixmap(self, pixmap: QPixmap, reset_pan: bool = False) -> None:
         self.source_pixmap = pixmap
         if self.fit_mode:
             self.fit_to_window()
         else:
             self.render_at_scale(self.display_scale)
+        if reset_pan:
+            self.reset_pan()
+
+    def reset_pan(self) -> None:
+        """Start the next picture from its top, centred, instead of where
+        the previous one was left scrolled to."""
+        horizontal = self.horizontalScrollBar()
+        horizontal.setValue((horizontal.minimum() + horizontal.maximum()) // 2)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
 
     def fit_to_window(self) -> None:
         self.fit_mode = True
@@ -252,12 +305,18 @@ class ImageView(QGraphicsView):
                 self.render_at_scale(target)
             event.accept()
             return
-        self.navigate.emit(1 if event.angleDelta().y() < 0 else -1)
+        direction = wheel_direction(event)
+        if direction:
+            self.navigate.emit(direction)
         event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self.fullscreen_requested.emit()
+            event.accept()
+            return
+        if event.button() in PAGE_BUTTONS:
+            self.navigate.emit(PAGE_BUTTONS[event.button()])
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
@@ -289,6 +348,10 @@ class ImageView(QGraphicsView):
         self._left_press_position = None
         event.accept()
 
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if self.fit_mode:
@@ -301,6 +364,7 @@ class VideoView(QWidget):
     play_pause_requested = Signal()
     volume_change_requested = Signal(int)
     seek_requested = Signal(int)
+    context_menu_requested = Signal(QPoint)
 
     def __init__(self) -> None:
         super().__init__()
@@ -345,6 +409,19 @@ class VideoView(QWidget):
 
     def update_position(self, position: int) -> None:
         self.controls.update_position(position, self.video_duration)
+
+    def frame_pixmap(self) -> QPixmap:
+        """Grab the frame on screen so it can become a favorite thumbnail."""
+        sink = self.surface.videoSink()
+        if sink is not None:
+            image = sink.videoFrame().toImage()
+            if not image.isNull():
+                return QPixmap.fromImage(image)
+        return self.surface.grab()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()
 
     def show_video_controls(self) -> None:
         self.controls_hide_timer.stop()
@@ -392,16 +469,26 @@ class VideoView(QWidget):
                 self.schedule_controls_hide()
         elif event.type() == QEvent.Type.Leave:
             self.schedule_controls_hide()
+        elif event.type() == QEvent.Type.ContextMenu:
+            self.context_menu_requested.emit(event.globalPos())
+            event.accept()
+            return True
         elif event.type() == QEvent.Type.Wheel:
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.volume_change_requested.emit(5 if event.angleDelta().y() > 0 else -5)
             else:
-                self.navigate.emit(1 if event.angleDelta().y() < 0 else -1)
+                direction = wheel_direction(event)
+                if direction:
+                    self.navigate.emit(direction)
             event.accept()
             return True
         elif event.type() == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.MiddleButton:
                 self.fullscreen_requested.emit()
+                event.accept()
+                return True
+            if event.button() in PAGE_BUTTONS:
+                self.navigate.emit(PAGE_BUTTONS[event.button()])
                 event.accept()
                 return True
             if event.button() == Qt.MouseButton.LeftButton:
