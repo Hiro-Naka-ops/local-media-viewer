@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from PIL import Image
+from PIL.ImageQt import ImageQt
 from PySide6.QtCore import (
     QAbstractListModel,
     QModelIndex,
@@ -16,6 +18,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QAbstractItemView, QFrame, QHBoxLayout, QListView, QWidget
 
+from local_media_viewer import heic  # noqa: F401  (registers the HEIC decoder)
 from local_media_viewer.media import VIDEO_EXTENSIONS
 
 THUMBNAIL_SIZE = QSize(88, 62)
@@ -53,7 +56,21 @@ def read_thumbnail(path: Path) -> QImage:
     if size.isValid():
         size.scale(THUMBNAIL_SIZE, Qt.AspectRatioMode.KeepAspectRatio)
         reader.setScaledSize(size)
-    return reader.read()
+    image = reader.read()
+    if image.isNull():
+        # Qt has no decoder for some formats (HEIC on Windows); Pillow does.
+        image = read_thumbnail_with_pillow(path)
+    return image
+
+
+def read_thumbnail_with_pillow(path: Path) -> QImage:
+    try:
+        with Image.open(path) as source:
+            source.thumbnail((THUMBNAIL_SIZE.width(), THUMBNAIL_SIZE.height()))
+            # copy() detaches the QImage from the buffer ImageQt keeps alive.
+            return ImageQt(source.convert("RGBA")).copy()
+    except (OSError, ValueError):
+        return QImage()
 
 
 class ThumbnailLoader(QObject):

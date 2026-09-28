@@ -207,7 +207,7 @@ Windows 11向けの完全ローカル画像・動画ビューワーです。Pyth
 
 ## 対応形式
 
-- 画像: JPG、PNG、BMP、GIF、WebP、TIFF
+- 画像: JPG、PNG、BMP、GIF、WebP、TIFF、HEIC / HEIF（iPhone の写真）
 - 動画: MP4、WebM、MOV、AVI、MKV、M4V
 
 動画の再生可否はWindowsとQt Multimediaが利用できるコーデックに依存します。表示フィルターは画像とアニメーション画像へ適用し、動画には初期版では適用しません。

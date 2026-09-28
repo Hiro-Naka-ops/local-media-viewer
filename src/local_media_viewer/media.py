@@ -3,12 +3,16 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Iterable, Iterator
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+# HEIC / HEIF (iPhone photos) are decoded by pillow-heif; see preloader.py.
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
+}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
@@ -135,6 +139,24 @@ def scan_media(folder: Path) -> Iterator[os.DirEntry]:
                     continue
     except (OSError, ValueError):
         return
+
+
+def listed_path(files: list[Path], path: Path) -> Path | None:
+    """The listing's own spelling of a file in it, or None when it is not there.
+
+    macOS may spell a Japanese name decomposed (カ followed by a separate ゛)
+    in one place and composed (ガ) in another: the file dialog and the folder
+    listing do not always agree. The two compare unequal as strings, so the
+    names are compared in one normal form, and the listing's spelling is
+    handed back for everything that follows to match against.
+    """
+    if path in files:
+        return path
+    wanted = unicodedata.normalize("NFC", path.name)
+    for listed in files:
+        if unicodedata.normalize("NFC", listed.name) == wanted:
+            return listed
+    return None
 
 
 def media_files(folder: Path, order: SortOrder | None = None) -> list[Path]:

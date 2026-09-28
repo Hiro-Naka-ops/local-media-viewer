@@ -8,6 +8,8 @@ from threading import Lock
 from PIL import Image
 from PySide6.QtGui import QImage
 
+from local_media_viewer import heic  # noqa: F401  (registers the HEIC decoder)
+
 
 @dataclass
 class Frame:

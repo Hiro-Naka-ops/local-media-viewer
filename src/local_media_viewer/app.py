@@ -69,6 +69,7 @@ from local_media_viewer.media import (
     VIDEO_EXTENSIONS,
     SortOrder,
     file_times,
+    listed_path,
     media_files,
     sibling_media_folder,
 )
@@ -751,11 +752,13 @@ class MainWindow(QMainWindow):
             self.open_folder(path, 0)
             return
         files = media_files(path.parent, self.sort_order)
-        if path not in files:
+        listed = listed_path(files, path)
+        if listed is None:
             QMessageBox.warning(
                 self, tr("非対応形式"), tr("対応していないファイルです。\n{name}", name=path.name)
             )
             return
+        path = listed
         self.enter_folder(path.parent)
         self.files = files
         self.index = files.index(path)

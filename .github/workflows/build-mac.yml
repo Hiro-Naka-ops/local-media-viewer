@@ -28,7 +28,7 @@ jobs:
         # name order, real window frames) that a headless Mac runner differs on.
         continue-on-error: true
         run: |
-          python -m pip install "Pillow==12.1.1" "PySide6==6.10.2" "pytest==9.0.2"
+          python -m pip install "Pillow==12.1.1" "pillow-heif==1.8.0" "PySide6==6.10.2" "pytest==9.0.2"
           QT_QPA_PLATFORM=offscreen python -m pytest -q \
             --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
 

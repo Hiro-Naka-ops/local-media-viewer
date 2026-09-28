@@ -7,7 +7,7 @@ name = "local-media-viewer"
 version = "0.1.0"
 description = "Standalone Windows image and video viewer."
 requires-python = ">=3.11,<3.14"
-dependencies = ["Pillow==12.1.1", "PySide6==6.10.2"]
+dependencies = ["Pillow==12.1.1", "pillow-heif==1.8.0", "PySide6==6.10.2"]
 
 [project.optional-dependencies]
 dev = ["pytest==9.0.2", "ruff==0.15.4", "pyinstaller==6.19.0"]

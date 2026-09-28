@@ -5,7 +5,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-python3 -m pip install "Pillow==12.1.1" "PySide6==6.10.2" "pyinstaller==6.19.0"
+python3 -m pip install "Pillow==12.1.1" "pillow-heif==1.8.0" "PySide6==6.10.2" "pyinstaller==6.19.0"
 
 mkdir -p build
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src python3 scripts/render_icon.py build/icon-1024.png
