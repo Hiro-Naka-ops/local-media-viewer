@@ -87,6 +87,11 @@ from local_media_viewer.viewer import ImageView, VideoView
 
 
 STATUS_HINT_COLOR = "#98A2B3"
+# Filter slider ranges; gamma is in hundredths (70 = 0.70).
+BRIGHTNESS_RANGE = (-30, 30)
+CONTRAST_RANGE = (-30, 30)
+GAMMA_RANGE = (70, 130)
+HUE_RANGE = (-30, 30)
 
 # Qt's own strings (the Yes/No buttons, the colour dialog) come from these.
 QT_TRANSLATIONS = {"ja": "qtbase_ja", "zh": "qtbase_zh_CN", "ko": "qtbase_ko"}
@@ -644,12 +649,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.filter_title)
         layout.addWidget(self.filter_note)
         form = QFormLayout()
-        self.brightness = self.make_slider(-100, 100, self.settings.brightness, 0)
-        self.contrast = self.make_slider(-100, 100, self.settings.contrast, 0)
-        self.gamma = self.make_slider(
-            20, 300, round(self.settings.gamma * 100), 100, divisions=14
-        )
-        self.hue = self.make_slider(-180, 180, self.settings.hue, 0)
+        # Narrow ranges on purpose: across the old ±100 (±180 for hue) one scale
+        # mark moved a picture further than anyone wanted to adjust by, and the
+        # far ends were never useful for reading. Each mark is now 3 (0.03 gamma).
+        self.brightness = self.make_slider(*BRIGHTNESS_RANGE, self.settings.brightness, 0)
+        self.contrast = self.make_slider(*CONTRAST_RANGE, self.settings.contrast, 0)
+        self.gamma = self.make_slider(*GAMMA_RANGE, round(self.settings.gamma * 100), 100)
+        self.hue = self.make_slider(*HUE_RANGE, self.settings.hue, 0)
         # Kept with their i18n keys so retranslate_ui can relabel the rows.
         self.filter_labels: list[tuple[QLabel, str]] = []
         for text, slider in [
