@@ -236,30 +236,47 @@ def test_the_pan_reset_option_returns_to_the_top_of_the_next_page(
         window.close()
 
 
-def test_options_live_under_their_own_toolbar_button(tmp_path: Path, monkeypatch) -> None:
+def sections(menu) -> list[list]:
+    """A menu's actions, split at its separators."""
+    groups: list[list] = [[]]
+    for action in menu.actions():
+        if action.isSeparator():
+            groups.append([])
+        else:
+            groups[-1].append(action)
+    return groups
+
+
+def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
     window = make_window(monkeypatch)
     try:
-        actions = window.settings_menu.actions()
-        rules = [i for i, action in enumerate(actions) if action.isSeparator()]
-
-        # Each option group is ruled off, and the language entry closes the menu.
-        assert len(rules) == len(window.option_groups) == 3
-        starts = [0] + [rule + 1 for rule in rules]
-        sections = [
-            [a.text() for a in actions[start:end]]
-            for start, end in zip(starts, rules + [len(actions)])
+        titles = [action.text() for action in window.menuBar().actions()]
+        assert titles == [
+            "ファイル(&F)", "表示(&V)", "見開き(&S)", "お気に入り(&A)", "ウィンドウ(&W)"
         ]
-        for section, group in zip(sections, window.option_groups):
-            assert section == [a.text() for a in group]
-        assert actions[-1].menu() is window.language_menu
 
-        # The spread settings are the ones kept together at the bottom.
-        assert sections[2] == [
+        panels, drawing, spread = window.option_groups
+        view = sections(window.view_menu)
+        # Zoom, the panels, how the picture is drawn, and the language closing
+        # the menu, each ruled off from the next. Full screen is a window matter.
+        assert view == [
+            [window.fit_action],
+            panels,
+            drawing,
+            [window.language_menu.menuAction()],
+        ]
+        # The spread settings have a menu of their own.
+        assert sections(window.spread_menu) == [spread]
+        assert [a.text() for a in spread] == [
             "見開き表示（2ページ）",
             "見開きを右送りにする",
             "1ページ目を表紙として単独表示",
             "見開きページをずらす",
         ]
+        # What is left on the toolbar is only paging (the video controls are
+        # hidden until a video is open).
+        shown = [a for a in window.toolbar.actions() if a.isVisible()]
+        assert shown == [window.previous_action, window.next_action]
     finally:
         window.close()
 
@@ -273,6 +290,7 @@ def test_the_favorites_menu_holds_no_settings(tmp_path: Path, monkeypatch) -> No
     try:
         window.open_path(folder / "0.png")
         window.add_favorite()
+        window.prepare_favorites_menu()
         labels = {action.text() for action in window.favorites_menu.actions()}
         # A list of bookmarked folders is not where the display options belong.
         assert labels.isdisjoint({action.text() for action in window.option_actions})

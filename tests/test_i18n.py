@@ -100,7 +100,7 @@ def test_a_fresh_install_follows_windows(monkeypatch) -> None:
     window = make_window(monkeypatch)
     try:
         assert i18n.current_language() == "ko"
-        assert window.open_file_action.text() == "파일 열기"
+        assert window.open_file_action.text() == "파일 열기…"
         assert window.language_actions[i18n.AUTO].isChecked()
     finally:
         window.close()
@@ -111,13 +111,14 @@ def test_switching_language_relabels_the_window_in_place(tmp_path: Path, monkeyp
     window = make_window(monkeypatch)
     try:
         window.open_path(tmp_path / "1.png")
-        assert window.open_file_action.text() == "ファイルを開く"
+        assert window.open_file_action.text() == "ファイルを開く…"
 
         window.language_actions["en"].trigger()
 
-        assert window.open_file_action.text() == "Open File"
-        assert window.settings_button.text() == "View Settings ▾"
-        assert window.favorites_button.text() == "Favorites ▾"
+        assert window.open_file_action.text() == "Open File…"
+        assert window.view_menu.title() == "&View"
+        assert window.favorites_menu.title() == "F&avorites"
+        assert window.register_favorite_action.text() == "Add to Favorites"
         assert window.spread_action.text() == "Two-Page Spread"
         assert window.effect_menu.title() == "Effect"
         assert window.effect_actions["sepia"].text() == "Sepia"
@@ -137,7 +138,7 @@ def test_switching_language_relabels_the_window_in_place(tmp_path: Path, monkeyp
 def test_a_saved_language_wins_over_windows(monkeypatch) -> None:
     window = make_window(monkeypatch, ViewerSettings(language="zh"))
     try:
-        assert window.open_folder_action.text() == "打开文件夹"
+        assert window.open_folder_action.text() == "打开文件夹…"
         assert window.language_actions["zh"].isChecked()
     finally:
         window.close()
@@ -161,7 +162,7 @@ def test_right_click_menu_carries_fit_and_full_screen_but_not_language(
         window.show_media_menu(window.pos())
         actions = shown[-1]
         texts = [a.text() for a in actions if not a.isSeparator()]
-        assert texts[:3] == ["お気に入りに登録", "フィット／原寸", "全画面表示"]
+        assert texts[:3] == ["お気に入りに登録", "フィット／原寸", "全画面表示	Enter"]
         assert window.language_menu.menuAction() not in actions
         for group in window.option_groups:
             assert all(action in actions for action in group)

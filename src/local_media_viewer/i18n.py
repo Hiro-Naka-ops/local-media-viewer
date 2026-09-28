@@ -28,7 +28,6 @@ CODES = {code for code, _name in LANGUAGES}
 CATALOG: dict[str, dict[str, str]] = {
     # Toolbar
     "操作": {ENGLISH: "Controls", CHINESE: "操作", KOREAN: "조작"},
-    "ファイルを開く": {ENGLISH: "Open File", CHINESE: "打开文件", KOREAN: "파일 열기"},
     "フォルダを開く": {ENGLISH: "Open Folder", CHINESE: "打开文件夹", KOREAN: "폴더 열기"},
     "前へ": {ENGLISH: "Previous", CHINESE: "上一个", KOREAN: "이전"},
     "次へ": {ENGLISH: "Next", CHINESE: "下一个", KOREAN: "다음"},
@@ -41,18 +40,38 @@ CATALOG: dict[str, dict[str, str]] = {
     "フィルター": {ENGLISH: "Filters", CHINESE: "滤镜", KOREAN: "필터"},
     "フィルムストリップ": {ENGLISH: "Filmstrip", CHINESE: "胶片栏", KOREAN: "필름스트립"},
     "音量": {ENGLISH: "Volume", CHINESE: "音量", KOREAN: "음량"},
-    "表示設定": {ENGLISH: "View Settings", CHINESE: "显示设置", KOREAN: "보기 설정"},
-    "表示・並び順・見開き・言語の設定": {
-        ENGLISH: "Display, sort order, spread and language settings",
-        CHINESE: "显示、排序、双页和语言设置",
-        KOREAN: "표시·정렬·두 페이지·언어 설정",
+    # Menu bar. The (&X) letter is the Alt key, written the way Windows
+    # writes it for languages whose words have no Latin letter to underline.
+    "ファイル(&F)": {ENGLISH: "&File", CHINESE: "文件(&F)", KOREAN: "파일(&F)"},
+    "表示(&V)": {ENGLISH: "&View", CHINESE: "视图(&V)", KOREAN: "보기(&V)"},
+    "見開き(&S)": {ENGLISH: "&Spread", CHINESE: "双页(&S)", KOREAN: "두 페이지(&S)"},
+    "お気に入り(&A)": {ENGLISH: "F&avorites", CHINESE: "收藏夹(&A)", KOREAN: "즐겨찾기(&A)"},
+    "ファイルを開く…": {ENGLISH: "Open File…", CHINESE: "打开文件…", KOREAN: "파일 열기…"},
+    "フォルダを開く…": {ENGLISH: "Open Folder…", CHINESE: "打开文件夹…", KOREAN: "폴더 열기…"},
+    "ウィンドウ(&W)": {ENGLISH: "&Window", CHINESE: "窗口(&W)", KOREAN: "창(&W)"},
+    "常に手前に表示": {ENGLISH: "Always on Top", CHINESE: "窗口置顶", KOREAN: "항상 위에 표시"},
+    "最大化": {ENGLISH: "Maximize", CHINESE: "最大化", KOREAN: "최대화"},
+    "画面の左半分に配置": {
+        ENGLISH: "Left Half of Screen",
+        CHINESE: "放到屏幕左半边",
+        KOREAN: "화면 왼쪽 절반에 배치",
     },
-    "お気に入り": {ENGLISH: "Favorites", CHINESE: "收藏夹", KOREAN: "즐겨찾기"},
-    "登録したフォルダを開く": {
-        ENGLISH: "Open a saved folder",
-        CHINESE: "打开已收藏的文件夹",
-        KOREAN: "저장한 폴더 열기",
+    "画面の右半分に配置": {
+        ENGLISH: "Right Half of Screen",
+        CHINESE: "放到屏幕右半边",
+        KOREAN: "화면 오른쪽 절반에 배치",
     },
+    "画面の中央に移動": {
+        ENGLISH: "Center on Screen",
+        CHINESE: "移到屏幕中央",
+        KOREAN: "화면 가운데로 이동",
+    },
+    "次のディスプレイへ移動": {
+        ENGLISH: "Move to Next Display",
+        CHINESE: "移到下一个显示器",
+        KOREAN: "다음 디스플레이로 이동",
+    },
+    "終了(&X)": {ENGLISH: "E&xit", CHINESE: "退出(&X)", KOREAN: "끝내기(&X)"},
     # Video controls (shown only while a video is open)
     "▶ 再生": {ENGLISH: "▶ Play", CHINESE: "▶ 播放", KOREAN: "▶ 재생"},
     "❚❚ 一時停止": {ENGLISH: "❚❚ Pause", CHINESE: "❚❚ 暂停", KOREAN: "❚❚ 일시 정지"},

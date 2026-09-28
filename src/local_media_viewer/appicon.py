@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from ctypes import windll
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
@@ -55,6 +54,9 @@ def claim_taskbar_identity() -> None:
     """
     if sys.platform != "win32":
         return
+    # Imported here: ctypes.windll exists only on Windows.
+    from ctypes import windll
+
     try:
         windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_MODEL_ID)
     except (AttributeError, OSError):

@@ -46,6 +46,19 @@ PAGE_BUTTONS = {
 }
 
 
+# How far fingers travel on a trackpad before a swipe counts as a page turn.
+SWIPE_DISTANCE = 40
+
+
+def delta_direction(horizontal: int, vertical: int) -> int:
+    """Rolling down or tilting right moves forward; the roll wins over the tilt."""
+    if vertical:
+        return 1 if vertical < 0 else -1
+    if horizontal:
+        return 1 if horizontal > 0 else -1
+    return 0
+
+
 def wheel_direction(event: QWheelEvent) -> int:
     """Turn a wheel roll or a horizontal tilt into a page step.
 
@@ -56,13 +69,45 @@ def wheel_direction(event: QWheelEvent) -> int:
     """
     angles = event.angleDelta()
     pixels = event.pixelDelta()
-    vertical = angles.y() or pixels.y()
-    if vertical:
-        return 1 if vertical < 0 else -1
-    horizontal = angles.x() or pixels.x()
-    if horizontal:
-        return 1 if horizontal > 0 else -1
-    return 0
+    return delta_direction(angles.x() or pixels.x(), angles.y() or pixels.y())
+
+
+class WheelPager:
+    """Turns wheel events into page steps, at most one per trackpad swipe.
+
+    A mouse wheel sends one event per notch, and each is a page. A macOS
+    trackpad instead streams dozens of small events per swipe, followed by
+    momentum events after the fingers lift, so taking each one as a page would
+    fly through the folder. Those events carry a scroll phase (a mouse wheel's
+    never does, on Windows included), which marks where each swipe begins.
+    """
+
+    def __init__(self) -> None:
+        self.turned = False
+        self.travel_x = 0
+        self.travel_y = 0
+
+    def step(self, event: QWheelEvent) -> int:
+        phase = event.phase()
+        if phase == Qt.ScrollPhase.NoScrollPhase:
+            return wheel_direction(event)
+        if phase == Qt.ScrollPhase.ScrollBegin:
+            self.turned = False
+            self.travel_x = self.travel_y = 0
+        if phase in (Qt.ScrollPhase.ScrollEnd, Qt.ScrollPhase.ScrollMomentum) or self.turned:
+            return 0
+        pixels = event.pixelDelta()
+        angles = event.angleDelta()
+        self.travel_x += pixels.x() or angles.x()
+        self.travel_y += pixels.y() or angles.y()
+        if max(abs(self.travel_x), abs(self.travel_y)) < SWIPE_DISTANCE:
+            return 0
+        self.turned = True
+        # The dominant axis decides, so a slightly diagonal swipe still reads
+        # as the vertical or horizontal move it was meant to be.
+        if abs(self.travel_y) >= abs(self.travel_x):
+            return delta_direction(0, self.travel_y)
+        return delta_direction(self.travel_x, 0)
 
 
 def format_media_time(milliseconds: int) -> str:
@@ -191,6 +236,7 @@ class ImageView(QGraphicsView):
     def __init__(self) -> None:
         super().__init__()
         self.setScene(QGraphicsScene(self))
+        self.pager = WheelPager()
         self.item = QGraphicsPixmapItem()
         self.scene().addItem(self.item)
         self.fit_mode = True
@@ -300,7 +346,7 @@ class ImageView(QGraphicsView):
                 self.render_at_scale(target)
             event.accept()
             return
-        direction = wheel_direction(event)
+        direction = self.pager.step(event)
         if direction:
             self.navigate.emit(direction)
         event.accept()
@@ -364,6 +410,7 @@ class VideoView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.video_duration = 0
+        self.pager = WheelPager()
         self.setStyleSheet("background: black;")
         self.surface = QVideoWidget(self)
         self.surface.setMouseTracking(True)
@@ -472,7 +519,7 @@ class VideoView(QWidget):
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.volume_change_requested.emit(5 if event.angleDelta().y() > 0 else -5)
             else:
-                direction = wheel_direction(event)
+                direction = self.pager.step(event)
                 if direction:
                     self.navigate.emit(direction)
             event.accept()

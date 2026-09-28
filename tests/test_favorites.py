@@ -320,7 +320,18 @@ def test_the_toolbar_cannot_be_hidden_from_a_right_click(tmp_path: Path, monkeyp
         window.close()
 
 
-def test_the_favorites_button_drops_its_menu_below_itself(tmp_path: Path, monkeypatch) -> None:
+def open_favorites(window) -> QPoint:
+    """Drop the お気に入り menu from the menu bar; returns where it should sit."""
+    bar = window.menuBar()
+    title = window.favorites_menu.menuAction()
+    area = bar.actionGeometry(title)
+    corner = bar.mapToGlobal(QPoint(area.left(), area.top() + area.height()))
+    bar.setActiveAction(title)
+    QApplication.processEvents()
+    return corner
+
+
+def test_the_favorites_menu_drops_below_its_title(tmp_path: Path, monkeypatch) -> None:
     folder = tmp_path / "メニュー"
     folder.mkdir()
     save_image(folder / "only.png", "red")
@@ -333,16 +344,13 @@ def test_the_favorites_button_drops_its_menu_below_itself(tmp_path: Path, monkey
         window.open_path(folder / "only.png")
         window.add_favorite()
 
-        button = window.favorites_button
-        assert button.text() == "お気に入り ▾"
-        # No menu is attached, so the style paints no arrow of its own.
-        assert button.menu() is None
-
-        button.click()
-        app.processEvents()
+        corner = open_favorites(window)
         menu = window.favorites_menu
         assert menu.isVisible()
-        assert menu.pos() == button.mapToGlobal(QPoint(0, button.height()))
+        assert menu.pos() == corner
+        # Registering sits above the list, and is offered once a folder is open.
+        assert menu.actions()[0] is window.register_favorite_action
+        assert window.register_favorite_action.isEnabled()
         menu.close()
     finally:
         window.close()
@@ -365,8 +373,7 @@ def test_a_long_list_scrolls_without_moving_the_popup(tmp_path: Path, monkeypatc
             window.navigate(1)
         assert len(window.favorites) == 30
 
-        window.favorites_button.click()
-        app.processEvents()
+        open_favorites(window)
         menu = window.favorites_menu
         entries = menu.entry_list
 
@@ -477,13 +484,10 @@ def test_a_long_menu_still_opens_under_the_label(tmp_path: Path, monkeypatch) ->
         window.move(window.x(), available.bottom() - 460)
         app.processEvents()
 
-        button = window.favorites_button
-        corner = button.mapToGlobal(QPoint(0, button.height()))
-        button.click()
-        app.processEvents()
+        corner = open_favorites(window)
 
         menu = window.favorites_menu
-        # Qt would lift the popup off the toolbar to fit; it must stay on the label.
+        # Qt would lift the popup over the menu bar to fit; it must stay under the title.
         assert menu.pos() == corner
         assert menu.pos().y() + menu.height() <= available.bottom() + 1
         assert menu.height() < menu.buttons[0].sizeHint().height() * len(window.favorites)

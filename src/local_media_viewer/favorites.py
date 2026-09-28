@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QContextMenuEvent, QIcon, QPixmap, QWheelEvent
+from PySide6.QtGui import QAction, QContextMenuEvent, QShowEvent, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QMenu,
@@ -119,7 +120,7 @@ class FavoritesList(QScrollArea):
 
 
 class FavoritesMenu(QMenu):
-    """The toolbar's favorites drop-down, also used for each group submenu."""
+    """The menu bar's favorites menu, also used for each group submenu."""
 
     activated = Signal(int)
     remove_requested = Signal(int)
@@ -135,9 +136,19 @@ class FavoritesMenu(QMenu):
         self.entry_list: FavoritesList | None = None
         self.group_menus: list[FavoritesMenu] = []
         self.groups: list[str] = []
+        # Put back above the entries on every rebuild; owned by the window, so
+        # clear() leaves them alive.
+        self.leading: list[QAction] = []
+        # Where the popup belongs (under its menu-bar title); None leaves the
+        # placement to Qt, as for the group submenus.
+        self.anchor: Callable[[], QPoint] | None = None
+        self.entry_action: QWidgetAction | None = None
 
     def set_favorites(self, favorites: list[Favorite]) -> None:
         self.reset()
+        if self.leading:
+            self.addActions(self.leading)
+            self.addSeparator()
         self.groups = group_names(favorites)
         if not favorites:
             empty = self.addAction(tr("お気に入りはありません"))
@@ -184,12 +195,14 @@ class FavoritesMenu(QMenu):
         action = QWidgetAction(self)
         action.setDefaultWidget(self.entry_list)
         self.addAction(action)
+        self.entry_action = action
 
     def reset(self) -> None:
         self.clear()  # also destroys the widgets held by the entry actions
         self.buttons.clear()
         self.entry_index.clear()
         self.entry_list = None
+        self.entry_action = None
         for submenu in self.group_menus:
             submenu.reset()
             submenu.deleteLater()
@@ -201,6 +214,21 @@ class FavoritesMenu(QMenu):
             return
         overhead = self.sizeHint().height() - self.entry_list.height()
         self.entry_list.fit_within(max(0, available - overhead))
+        # QMenu measures its items once and re-measures only when an action
+        # changes; a resized entry list does not count, so nudge the action.
+        self.entry_action.setVisible(False)
+        self.entry_action.setVisible(True)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if self.anchor is None:
+            return
+        corner = self.anchor()
+        if self.y() != corner.y():
+            # QMenuBar decides between below and above its title from the size
+            # the menu had before aboutToShow trimmed the list, so a long list
+            # gets lifted over the bar; the trimmed menu does fit below.
+            self.move(self.x(), corner.y())
 
     def _make_button(self, favorite: Favorite, index: int) -> QToolButton:
         button = QToolButton()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,11 +41,16 @@ class ViewerSettings:
     sort_descending: bool = False
     # "" follows the Windows display language; otherwise an i18n language code.
     language: str = ""
+    always_on_top: bool = False
     favorites: list[Favorite] = field(default_factory=list)
 
 
 def settings_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    if sys.platform == "darwin":
+        # Where macOS apps keep their own data; ~/AppData means nothing there.
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "LocalMediaViewer" / "settings.json"
 
 

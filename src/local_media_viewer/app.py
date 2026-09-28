@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QLibraryInfo,
     QLocale,
     QPoint,
+    QRect,
     QTimer,
     QTranslator,
     Qt,
@@ -27,6 +28,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QDragEnterEvent,
     QDropEvent,
+    QGuiApplication,
     QKeyEvent,
     QKeySequence,
     QPixmap,
@@ -49,7 +51,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QToolBar,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -71,6 +72,7 @@ from local_media_viewer.media import (
     media_files,
     sibling_media_folder,
 )
+from local_media_viewer.placement import LEFT, RIGHT, carried_over, centered, half
 from local_media_viewer.preloader import ImagePreloader, load_frame, load_image
 from local_media_viewer.sorticon import sort_icon
 from local_media_viewer.settings import (
@@ -219,6 +221,12 @@ class MainWindow(QMainWindow):
         # relabel everything in place instead of rebuilding the window.
         self.toolbar = QToolBar()
         self.toolbar.setMovable(False)
+        # The Windows 11 style fills a checked button with the accent colour,
+        # which shouts over the picture; a quiet grey still reads as "on".
+        self.toolbar.setStyleSheet(
+            "QToolButton:checked { background: rgba(128, 128, 128, 0.35);"
+            " border: none; border-radius: 4px; }"
+        )
         self.addToolBar(self.toolbar)
         self.open_file_action = QAction(self)
         self.open_folder_action = QAction(self)
@@ -252,6 +260,7 @@ class MainWindow(QMainWindow):
         self.fullscreen_action = QAction(self)
         self.fullscreen_action.setCheckable(True)
         self.fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        self.create_window_actions()
         self.filter_action = QAction(self)
         self.filter_action.setCheckable(True)
         self.filter_action.setChecked(self.settings.filter_panel_visible)
@@ -278,17 +287,15 @@ class MainWindow(QMainWindow):
         self.volume_slider.setValue(self.settings.volume)
         self.volume_slider.setFixedWidth(110)
         self.volume_slider.valueChanged.connect(self.set_volume)
-        # Left to right: getting a file, moving through it, the panels around
-        # the picture, then the two drop-downs, and the video controls at the
+        self.open_file_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.open_folder_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.quit_action = QAction(self)
+        self.quit_action.triggered.connect(self.close)
+        self.create_menu_bar()
+        # Everything else lives in the menu bar; the toolbar keeps only what is
+        # pressed over and over while reading. The video controls sit at the
         # far end, where appearing and vanishing shifts nothing else.
-        self.toolbar.addActions([self.open_file_action, self.open_folder_action])
-        self.toolbar.addSeparator()
-        self.toolbar.addActions([self.previous_action, self.next_action, self.fit_action])
-        self.toolbar.addSeparator()
-        self.toolbar.addActions([self.filmstrip_action, self.filter_action])
-        self.toolbar.addSeparator()
-        self.toolbar.addWidget(self.create_settings_button())
-        self.toolbar.addWidget(self.create_favorites_button())
+        self.toolbar.addActions([self.previous_action, self.next_action])
         # Hidden through the QActions addWidget/addSeparator hand back: a
         # toolbar re-shows a widget it holds whenever it lays itself out, so
         # hiding the QSlider itself does not stick.
@@ -449,16 +456,12 @@ class MainWindow(QMainWindow):
     def retranslate_ui(self) -> None:
         """Put every label in the current language."""
         self.toolbar.setWindowTitle(tr("操作"))
-        self.open_file_action.setText(tr("ファイルを開く"))
-        self.open_folder_action.setText(tr("フォルダを開く"))
         self.previous_action.setText(tr("前へ"))
         self.previous_action.setToolTip(f"{tr('前へ')} (← / ↑)")
         self.next_action.setText(tr("次へ"))
         self.next_action.setToolTip(f"{tr('次へ')} (→ / ↓)")
         self.fit_action.setText(tr("フィット／原寸"))
         self.fit_action.setToolTip(f"{tr('フィット／原寸')} (Space)")
-        self.fullscreen_action.setText(tr("全画面表示"))
-        self.filter_action.setText(tr("フィルター"))
         self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
         self.filmstrip_action.setText(tr("フィルムストリップ"))
         self.reset_pan_action.setText(tr("パン位置を毎回初期化する"))
@@ -467,6 +470,25 @@ class MainWindow(QMainWindow):
         self.spread_cover_action.setText(tr("1ページ目を表紙として単独表示"))
         self.spread_shift_action.setText(tr("見開きページをずらす"))
         self.spread_shift_action.setToolTip(tr("組み合わせを1ページ分ずらす"))
+        self.open_file_action.setText(tr("ファイルを開く…"))
+        self.open_folder_action.setText(tr("フォルダを開く…"))
+        self.quit_action.setText(tr("終了(&X)"))
+        self.file_menu.setTitle(tr("ファイル(&F)"))
+        self.view_menu.setTitle(tr("表示(&V)"))
+        self.spread_menu.setTitle(tr("見開き(&S)"))
+        self.favorites_menu.setTitle(tr("お気に入り(&A)"))
+        self.window_menu.setTitle(tr("ウィンドウ(&W)"))
+        self.always_on_top_action.setText(tr("常に手前に表示"))
+        self.maximize_action.setText(tr("最大化"))
+        self.snap_left_action.setText(tr("画面の左半分に配置"))
+        self.snap_right_action.setText(tr("画面の右半分に配置"))
+        self.center_action.setText(tr("画面の中央に移動"))
+        self.next_screen_action.setText(tr("次のディスプレイへ移動"))
+        self.register_favorite_action.setText(tr("お気に入りに登録"))
+        # The keys are handled by shortcuts of their own (see create_toolbar);
+        # the text after the tab only shows them in the menu's key column.
+        self.fullscreen_action.setText(f"{tr('全画面表示')}\tEnter")
+        self.filter_action.setText(f"{tr('フィルター')}\tF")
         self.effect_menu.setTitle(tr("エフェクト"))
         for key, label in EFFECT_LABELS:
             self.effect_actions[key].setText(tr(label))
@@ -477,10 +499,6 @@ class MainWindow(QMainWindow):
         self.sort_descending_action.setText(tr("降順"))
         self.language_menu.setTitle(language_menu_title())
         self.language_actions[i18n.AUTO].setText(tr("システムに合わせる"))
-        self.settings_button.setText(f"{tr('表示設定')} ▾")
-        self.settings_button.setToolTip(tr("表示・並び順・見開き・言語の設定"))
-        self.favorites_button.setText(f"{tr('お気に入り')} ▾")
-        self.favorites_button.setToolTip(tr("登録したフォルダを開く"))
         self.show_playback_state()
         self.stop_action.setText(tr("■ 停止"))
         self.stop_action.setToolTip(tr("停止して先頭に戻す"))
@@ -922,58 +940,171 @@ class MainWindow(QMainWindow):
                         nearby.append(path)
         self.preloader.preload(nearby, self.plain_view())
 
-    def create_settings_button(self) -> QToolButton:
-        """The toolbar's 表示設定 drop-down.
+    def create_menu_bar(self) -> None:
+        """ファイル / 表示 / 見開き / お気に入り, in the usual Windows order.
 
-        Kept apart from お気に入り: the two have nothing to do with each other,
-        and a list of bookmarked folders is no place to go looking for how the
-        pages are laid out. The actions themselves belong to the window, so the
-        right-click menu shows the very same ones.
+        The actions belong to the window, so the right-click menu shows the
+        very same ones and their ticks stay in step without any syncing.
         """
-        self.settings_menu = QMenu(self)
-        for group in self.option_groups:
-            self.settings_menu.addActions(group)
-            self.settings_menu.addSeparator()
+        bar = self.menuBar()
+        self.file_menu = bar.addMenu("")
+        self.file_menu.addActions([self.open_file_action, self.open_folder_action])
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(self.quit_action)
+
+        panels, drawing, spread = self.option_groups
+        self.view_menu = bar.addMenu("")
+        self.view_menu.addAction(self.fit_action)
+        for group in (panels, drawing):
+            self.view_menu.addSeparator()
+            self.view_menu.addActions(group)
         # Language lives here only: it is set once, not while reading, so it
         # has no place in the right-click menu.
-        self.settings_menu.addMenu(self.language_menu)
-        self.settings_button = QToolButton()
-        # Text-only button that drops its own menu, matching the favorites one:
-        # attaching the menu to the button makes the style paint a stray arrow.
-        self.settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.settings_button.setAutoRaise(True)
-        self.settings_button.clicked.connect(self.show_settings_menu)
-        return self.settings_button
+        self.view_menu.addSeparator()
+        self.view_menu.addMenu(self.language_menu)
 
-    def show_settings_menu(self) -> None:
-        button = self.settings_button
-        self.settings_menu.popup(button.mapToGlobal(QPoint(0, button.height())))
+        self.spread_menu = bar.addMenu("")
+        self.spread_menu.addActions(spread)
 
-    def create_favorites_button(self) -> QToolButton:
+        self.register_favorite_action = QAction(self)
+        self.register_favorite_action.triggered.connect(self.add_favorite)
         self.favorites_menu = FavoritesMenu()
+        self.favorites_menu.leading = [self.register_favorite_action]
+        self.favorites_menu.anchor = self.favorites_anchor
         self.favorites_menu.activated.connect(self.open_favorite)
         self.favorites_menu.remove_requested.connect(self.remove_favorite)
         self.favorites_menu.move_requested.connect(self.move_favorite)
         self.favorites_menu.new_group_requested.connect(self.name_new_group)
-        self.favorites_button = QToolButton()
-        # A plain text button that drops its own menu: attaching the menu to the
-        # button instead makes the style paint a stray arrow beside the label.
-        self.favorites_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.favorites_button.setAutoRaise(True)
-        self.favorites_button.clicked.connect(self.show_favorites_menu)
-        return self.favorites_button
+        self.favorites_menu.aboutToShow.connect(self.prepare_favorites_menu)
+        bar.addMenu(self.favorites_menu)
 
-    def show_favorites_menu(self) -> None:
-        button = self.favorites_button
-        corner = button.mapToGlobal(QPoint(0, button.height()))
-        # Trim the popup to the room under the label, so Qt never lifts it
-        # back over the toolbar to make it fit.
-        self.favorites_menu.limit_to(button.screen().availableGeometry().bottom() - corner.y())
-        self.favorites_menu.popup(corner)
-        if self.favorites_menu.pos() != corner:
-            # Qt places the popup from its unconstrained size hint, which lifts a
-            # long list off the label; the trimmed menu does fit, so put it back.
-            self.favorites_menu.move(corner)
+        self.window_menu = bar.addMenu("")
+        self.window_menu.addActions([self.fullscreen_action, self.always_on_top_action])
+        self.window_menu.addSeparator()
+        self.window_menu.addActions(
+            [
+                self.maximize_action,
+                self.snap_left_action,
+                self.snap_right_action,
+                self.center_action,
+            ]
+        )
+        self.window_menu.addSeparator()
+        self.window_menu.addAction(self.next_screen_action)
+        self.window_menu.aboutToShow.connect(self.prepare_window_menu)
+
+    def create_window_actions(self) -> None:
+        self.always_on_top_action = QAction(self)
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.setChecked(self.settings.always_on_top)
+        self.always_on_top_action.toggled.connect(self.set_always_on_top)
+        # Set on the widget while it is still hidden; once shown, see
+        # set_always_on_top for why the flag goes through the native window.
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.settings.always_on_top)
+        self.maximize_action = QAction(self)
+        self.maximize_action.setCheckable(True)
+        self.maximize_action.triggered.connect(self.toggle_maximized)
+        self.snap_left_action = QAction(self)
+        self.snap_left_action.triggered.connect(lambda: self.snap_to_half(LEFT))
+        self.snap_right_action = QAction(self)
+        self.snap_right_action.triggered.connect(lambda: self.snap_to_half(RIGHT))
+        self.center_action = QAction(self)
+        self.center_action.triggered.connect(self.center_on_screen)
+        self.next_screen_action = QAction(self)
+        self.next_screen_action.triggered.connect(self.move_to_next_screen)
+
+    def prepare_window_menu(self) -> None:
+        self.maximize_action.setChecked(self.isMaximized())
+        self.fullscreen_action.setChecked(self.isFullScreen())
+        # Displays come and go while the app runs, so this is asked each time.
+        self.next_screen_action.setEnabled(len(QGuiApplication.screens()) > 1)
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        handle = self.windowHandle()
+        if handle is None:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        else:
+            # QWidget.setWindowFlag on a shown window re-creates it hidden, so
+            # the window would vanish until show(); the native window changes
+            # its topmost state in place.
+            handle.setFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        self.persist_settings()
+
+    def leave_full_screen_or_maximized(self) -> None:
+        if self.isFullScreen():
+            self.toggle_fullscreen()  # also brings the bars and panels back
+        if self.isMaximized():
+            self.showNormal()
+
+    def place_frame(self, frame: QRect) -> None:
+        """Put the window's outer frame, title bar included, on the given rectangle.
+
+        setGeometry places the client area, so the frame's own margins are
+        taken off first; otherwise the title bar would hang over the top edge.
+        """
+        self.leave_full_screen_or_maximized()
+        outer = self.frameGeometry()
+        inner = self.geometry()
+        self.setGeometry(
+            frame.adjusted(
+                inner.left() - outer.left(),
+                inner.top() - outer.top(),
+                inner.right() - outer.right(),
+                inner.bottom() - outer.bottom(),
+            )
+        )
+
+    def work_area(self) -> QRect:
+        return self.screen().availableGeometry()
+
+    def toggle_maximized(self) -> None:
+        if self.isFullScreen():
+            self.toggle_fullscreen()
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self.maximize_action.setChecked(self.isMaximized())
+
+    def snap_to_half(self, side: str) -> None:
+        self.place_frame(half(self.work_area(), side))
+
+    def center_on_screen(self) -> None:
+        self.leave_full_screen_or_maximized()
+        self.place_frame(centered(self.work_area(), self.frameGeometry().size()))
+
+    def move_to_next_screen(self) -> None:
+        screens = QGuiApplication.screens()
+        if len(screens) < 2:
+            return
+        current = self.screen()
+        target = screens[(screens.index(current) + 1) % len(screens)]
+        full_screen = self.isFullScreen()
+        maximized = self.isMaximized()
+        self.leave_full_screen_or_maximized()
+        self.place_frame(
+            carried_over(
+                self.frameGeometry(), current.availableGeometry(), target.availableGeometry()
+            )
+        )
+        # A maximized or full-screen window is put back that way on the new
+        # display, which is what dragging it across would have done.
+        if maximized:
+            self.showMaximized()
+        if full_screen:
+            self.toggle_fullscreen()
+
+    def prepare_favorites_menu(self) -> None:
+        self.register_favorite_action.setEnabled(self.current_folder is not None)
+        # Trim the list to the room under the menu bar, so the popup can open
+        # below its title rather than over the picture's top edge.
+        top = self.favorites_anchor().y()
+        self.favorites_menu.limit_to(self.menuBar().screen().availableGeometry().bottom() - top)
+
+    def favorites_anchor(self) -> QPoint:
+        bar = self.menuBar()
+        title = bar.actionGeometry(self.favorites_menu.menuAction())
+        return bar.mapToGlobal(QPoint(title.left(), title.top() + title.height()))
 
     def refresh_favorites(self) -> None:
         self.favorites_menu.set_favorites(self.favorites)
@@ -1246,6 +1377,7 @@ class MainWindow(QMainWindow):
             sort_key=self.sort_order.key,
             sort_descending=self.sort_order.descending,
             language=self.language_choice,
+            always_on_top=self.always_on_top_action.isChecked(),
             favorites=list(self.favorites),
         )
         save_settings(self.settings)
@@ -1258,11 +1390,13 @@ class MainWindow(QMainWindow):
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
+            self.menuBar().setVisible(True)
             self.toolbar.setVisible(True)
             self.statusBar().setVisible(True)
             self.filter_panel.setVisible(self.filter_action.isChecked())
             self.filmstrip.setVisible(self.filmstrip_action.isChecked())
         else:
+            self.menuBar().setVisible(False)
             self.toolbar.setVisible(False)
             self.statusBar().setVisible(False)
             self.filter_panel.setVisible(False)
