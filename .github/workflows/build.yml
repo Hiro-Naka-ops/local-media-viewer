@@ -73,6 +73,9 @@ jobs:
         with:
           name: Local-Media-Viewer-Windows
           path: dist/Local-Media-Viewer.exe
+          # A trial build is looked at within days, and a released one lives on
+          # in the release, so there is no point keeping these for 90 days.
+          retention-days: 7
 
   mac:
     needs: check
@@ -110,6 +113,7 @@ jobs:
           path: dist/Local-Media-Viewer-macOS-${{ matrix.arch }}.zip
           # Already a zip; storing it as-is avoids a pointless second compression.
           compression-level: 0
+          retention-days: 7
 
   release:
     # Only when asked for, and only when every build succeeded: a release
