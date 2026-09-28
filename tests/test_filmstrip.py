@@ -12,11 +12,11 @@ def test_filmstrip_wheel_scrolls_horizontally() -> None:
     filmstrip.set_files([Path(f"image-{index}.png") for index in range(20)])
     filmstrip.show()
     app.processEvents()
-    bar = filmstrip.scroll.horizontalScrollBar()
+    bar = filmstrip.view.horizontalScrollBar()
     assert bar.maximum() > 0
 
-    filmstrip.scroll.scroll_horizontal(-120)
+    filmstrip.view.scroll_horizontal(-120)
     assert bar.value() == 120
-    filmstrip.scroll.scroll_horizontal(60)
+    filmstrip.view.scroll_horizontal(60)
     assert bar.value() == 60
     filmstrip.close()

@@ -29,10 +29,17 @@ class ViewerSettings:
     filmstrip_visible: bool = True
     volume: int = 50
     window_geometry: str = ""
-    reset_pan_on_change: bool = False
+    reset_pan_on_change: bool = True
+    effect: str = "none"
+    line_color: str = "#24478F"
     spread_view: bool = False
     spread_rtl: bool = True
+    spread_cover: bool = True
     spread_anchor: int = 0
+    sort_key: str = "name"
+    sort_descending: bool = False
+    # "" follows the Windows display language; otherwise an i18n language code.
+    language: str = ""
     favorites: list[Favorite] = field(default_factory=list)
 
 

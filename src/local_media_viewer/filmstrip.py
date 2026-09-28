@@ -1,15 +1,143 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImageReader, QPixmap, QWheelEvent
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QToolButton, QWidget
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap, QWheelEvent
+from PySide6.QtWidgets import QAbstractItemView, QFrame, QHBoxLayout, QListView, QWidget
 
 from local_media_viewer.media import VIDEO_EXTENSIONS
 
+THUMBNAIL_SIZE = QSize(88, 62)
+ITEM_SIZE = QSize(104, 88)
+GRID_SIZE = QSize(110, 94)
 
-class FilmstripScrollArea(QScrollArea):
+FILMSTRIP_STYLE = """
+QListView {
+    background: #1D1D1D;
+    border: none;
+    outline: none;
+    color: white;
+}
+QListView::item {
+    background: #292929;
+    border: 1px solid #555555;
+    color: white;
+}
+QListView::item:hover { background: #3A3A3A; }
+QListView::item:selected { background: #292929; border: 3px solid #F79009; }
+"""
+
+
+def read_thumbnail(path: Path) -> QImage:
+    """Decode one thumbnail, letting the codec do the shrinking.
+
+    setScaledSize before read lets a JPEG decode straight to a reduced size
+    instead of unpacking the full frame first, which is most of the saving.
+    QImage is used rather than QPixmap because this runs off the UI thread,
+    where QPixmap is not allowed.
+    """
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid():
+        size.scale(THUMBNAIL_SIZE, Qt.AspectRatioMode.KeepAspectRatio)
+        reader.setScaledSize(size)
+    return reader.read()
+
+
+class ThumbnailLoader(QObject):
+    """Decodes thumbnails in worker threads and delivers them to the UI thread."""
+
+    ready = Signal(int, QImage)
+
+    def __init__(self, workers: int = 4) -> None:
+        super().__init__()
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="thumb")
+        # Bumped on every new folder so results from the previous one, which are
+        # already in flight and cannot be cancelled mid-decode, are dropped.
+        self.generation = 0
+
+    def reset(self) -> None:
+        self.generation += 1
+
+    def request(self, row: int, path: Path) -> None:
+        self._executor.submit(self._work, self.generation, row, path)
+
+    def _work(self, generation: int, row: int, path: Path) -> None:
+        if generation != self.generation:
+            return
+        try:
+            image = read_thumbnail(path)
+        except (OSError, ValueError):
+            return
+        if generation == self.generation and not image.isNull():
+            # Queued across threads by Qt, so the icon lands on the UI thread.
+            self.ready.emit(row, image)
+
+    def close(self) -> None:
+        self.generation += 1
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class FilmstripModel(QAbstractListModel):
+    """Holds the folder listing and whichever thumbnails have arrived so far."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.files: list[Path] = []
+        self.icons: dict[int, QIcon] = {}
+        self.labels: list[str] = []
+
+    def set_files(self, files: list[Path]) -> None:
+        self.beginResetModel()
+        self.files = list(files)
+        self.icons.clear()
+        self.labels = [self._label(path) for path in self.files]
+        self.endResetModel()
+
+    def set_icon(self, row: int, icon: QIcon) -> None:
+        if 0 <= row < len(self.files):
+            self.icons[row] = icon
+            index = self.index(row, 0)
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.files)
+
+    def data(self, index: QModelIndex | QPersistentModelIndex, role: int) -> object:
+        row = index.row()
+        if not 0 <= row < len(self.files):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self.labels[row]
+        if role == Qt.ItemDataRole.DecorationRole:
+            return self.icons.get(row)
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return str(self.files[row])
+        if role == Qt.ItemDataRole.SizeHintRole:
+            return ITEM_SIZE
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+        return None
+
+    @staticmethod
+    def _label(path: Path) -> str:
+        name = path.name if len(path.name) <= 14 else f"{path.name[:11]}…"
+        return f"▶ {name}" if path.suffix.lower() in VIDEO_EXTENSIONS else name
+
+
+class FilmstripView(QListView):
     def wheelEvent(self, event: QWheelEvent) -> None:
         pixels = event.pixelDelta()
         if not pixels.isNull():
@@ -32,70 +160,116 @@ class Filmstrip(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.files: list[Path] = []
-        self.buttons: list[QToolButton] = []
+        self.requested: set[int] = set()
+        self.current = -1
         self.setFixedHeight(112)
         self.setStyleSheet("background: #1D1D1D;")
 
-        self.content = QWidget()
-        self.row = QHBoxLayout(self.content)
-        self.row.setContentsMargins(8, 6, 8, 6)
-        self.row.setSpacing(6)
-        self.row.addStretch()
+        self.model = FilmstripModel()
+        # A QListView builds only the rows on screen. A widget per file laid the
+        # whole folder out on every open, which is what made a large folder take
+        # seconds to appear.
+        self.view = FilmstripView()
+        self.view.setModel(self.model)
+        self.view.setViewMode(QListView.ViewMode.IconMode)
+        self.view.setFlow(QListView.Flow.LeftToRight)
+        self.view.setWrapping(False)
+        self.view.setUniformItemSizes(True)
+        self.view.setResizeMode(QListView.ResizeMode.Adjust)
+        self.view.setMovement(QListView.Movement.Static)
+        self.view.setIconSize(THUMBNAIL_SIZE)
+        self.view.setGridSize(GRID_SIZE)
+        self.view.setSpacing(0)
+        self.view.setFrameShape(QFrame.Shape.NoFrame)
+        self.view.setStyleSheet(FILMSTRIP_STYLE)
+        self.view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.clicked.connect(self._emit_selected)
+        self.view.horizontalScrollBar().valueChanged.connect(self.schedule_visible_thumbnails)
 
-        self.scroll = FilmstripScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setWidget(self.content)
+        self.loader = ThumbnailLoader()
+        self.loader.ready.connect(self.apply_thumbnail)
+        # Scrolling fires continuously, so the requests it triggers are coalesced.
+        self.visible_timer = QTimer(self)
+        self.visible_timer.setSingleShot(True)
+        self.visible_timer.setInterval(60)
+        self.visible_timer.timeout.connect(self.request_visible_thumbnails)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.scroll)
+        layout.addWidget(self.view)
+
+    @property
+    def files(self) -> list[Path]:
+        return self.model.files
 
     def set_files(self, files: list[Path]) -> None:
-        if files == self.files:
+        if files == self.model.files:
             return
-        self.files = list(files)
-        for button in self.buttons:
-            self.row.removeWidget(button)
-            button.deleteLater()
-        self.buttons.clear()
-
-        for index, path in enumerate(files):
-            button = self._make_button(path, index)
-            self.row.insertWidget(self.row.count() - 1, button)
-            self.buttons.append(button)
+        self.loader.reset()
+        self.requested.clear()
+        self.current = -1
+        self.model.set_files(files)
+        self.schedule_visible_thumbnails()
 
     def set_current(self, index: int) -> None:
-        for button_index, button in enumerate(self.buttons):
-            selected = button_index == index
-            border = "3px solid #F79009" if selected else "1px solid #555555"
-            button.setStyleSheet(
-                f"QToolButton {{ color: white; background: #292929; border: {border}; }}"
-                "QToolButton:hover { background: #3A3A3A; }"
-            )
-        if 0 <= index < len(self.buttons):
-            self.scroll.ensureWidgetVisible(self.buttons[index], 30, 0)
+        self.current = index
+        if 0 <= index < self.model.rowCount():
+            model_index = self.model.index(index, 0)
+            self.view.setCurrentIndex(model_index)
+            self.view.scrollTo(model_index, QListView.ScrollHint.EnsureVisible)
+        else:
+            self.view.clearSelection()
+        self.schedule_visible_thumbnails()
 
-    def _make_button(self, path: Path, index: int) -> QToolButton:
-        button = QToolButton()
-        button.setFixedSize(104, 88)
-        button.setToolTip(str(path))
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        button.setIconSize(QSize(88, 62))
-        label = path.name if len(path.name) <= 14 else f"{path.name[:11]}…"
-        button.setText(f"▶ {label}" if path.suffix.lower() in VIDEO_EXTENSIONS else label)
-        if path.suffix.lower() not in VIDEO_EXTENSIONS:
-            reader = QImageReader(str(path))
-            reader.setAutoTransform(True)
-            size = reader.size()
-            if size.isValid():
-                size.scale(QSize(88, 62), Qt.AspectRatioMode.KeepAspectRatio)
-                reader.setScaledSize(size)
-            image = reader.read()
-            if not image.isNull():
-                button.setIcon(QIcon(QPixmap.fromImage(image)))
-        button.clicked.connect(lambda _checked=False, item=index: self.selected.emit(item))
-        return button
+    def schedule_visible_thumbnails(self) -> None:
+        if self.model.rowCount():
+            self.visible_timer.start()
+
+    def visible_range(self) -> tuple[int, int]:
+        """Which rows are on screen, padded so a short scroll finds them ready."""
+        count = self.model.rowCount()
+        if not count:
+            return (0, 0)
+        step = max(1, GRID_SIZE.width())
+        left = self.view.horizontalScrollBar().value()
+        width = self.view.viewport().width() or self.width()
+        first = max(0, left // step - 6)
+        last = min(count, (left + width) // step + 7)
+        return (first, max(first, last))
+
+    def request_visible_thumbnails(self) -> None:
+        first, last = self.visible_range()
+        for row in range(first, last):
+            if row in self.requested:
+                continue
+            path = self.model.files[row]
+            if path.suffix.lower() in VIDEO_EXTENSIONS:
+                continue
+            self.requested.add(row)
+            self.loader.request(row, path)
+
+    def apply_thumbnail(self, row: int, image: QImage) -> None:
+        pixmap = QPixmap.fromImage(image)
+        icon = QIcon()
+        # The same pixmap is registered for every state: left to itself Qt tints
+        # the icon of the selected row with the highlight colour, which would
+        # misreport the colours of the page being looked at.
+        for mode in (QIcon.Mode.Normal, QIcon.Mode.Selected, QIcon.Mode.Active):
+            icon.addPixmap(pixmap, mode, QIcon.State.Off)
+            icon.addPixmap(pixmap, mode, QIcon.State.On)
+        self.model.set_icon(row, icon)
+
+    def icon_for(self, row: int) -> QIcon | None:
+        return self.model.icons.get(row)
+
+    def closeEvent(self, event) -> None:
+        self.loader.close()
+        super().closeEvent(event)
+
+    def _emit_selected(self, index: QModelIndex) -> None:
+        if index.isValid():
+            self.selected.emit(index.row())

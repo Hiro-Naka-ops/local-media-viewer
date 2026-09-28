@@ -1,14 +1,29 @@
 from pathlib import Path
+from time import perf_counter
 
 from PIL import Image
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import local_media_viewer.app as app_module
+from local_media_viewer.filmstrip import Filmstrip
 from local_media_viewer.settings import ViewerSettings
 
 
 def save_image(path: Path, color: str) -> None:
     Image.new("RGB", (12, 8), color).save(path)
+
+
+def wait_for_thumbnail(qt_app: QApplication, filmstrip: Filmstrip, index: int) -> bool:
+    """Pump the loop until a thumbnail arrives from the loader threads."""
+    filmstrip.visible_timer.stop()
+    filmstrip.request_visible_thumbnails()
+    deadline = perf_counter() + 5.0
+    while perf_counter() < deadline:
+        qt_app.processEvents()
+        icon = filmstrip.icon_for(index)
+        if icon is not None and not icon.isNull():
+            return True
+    return False
 
 
 def test_folder_boundary_navigation_displays_target_image(
@@ -35,8 +50,10 @@ def test_folder_boundary_navigation_displays_target_image(
     window = app_module.MainWindow()
     try:
         window.open_path(current / "current.png")
-        assert len(window.filmstrip.buttons) == 1
-        assert window.filmstrip.buttons[0].icon().isNull() is False
+        assert window.filmstrip.model.rowCount() == 1
+        # Thumbnails are decoded off the UI thread, so they land after a turn
+        # of the event loop rather than during open_path.
+        assert wait_for_thumbnail(qt_app, window.filmstrip, 0)
         window.navigate(-1)
         assert window.current_folder == previous
         assert window.files[window.index].name == "previous.png"
@@ -47,7 +64,8 @@ def test_folder_boundary_navigation_displays_target_image(
         assert window.current_folder == following
         assert window.files[window.index].name == "following.png"
         assert not window.image_view.item.pixmap().isNull()
-        assert "3px solid #F79009" in window.filmstrip.buttons[0].styleSheet()
+        assert window.filmstrip.current == 0
+        assert window.filmstrip.view.currentIndex().row() == 0
         qt_app.processEvents()
     finally:
         window.close()

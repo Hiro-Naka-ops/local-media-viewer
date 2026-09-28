@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
+from local_media_viewer.i18n import tr
+
 
 def snap_value(
     value: int,
@@ -95,5 +97,8 @@ class SnappingSlider(QSlider):
                 )
             )
 
+    def retranslate(self) -> None:
+        self._show_value(self.value())
+
     def _show_value(self, value: int) -> None:
-        self.setToolTip(f"現在値: {value}（Ctrl+ドラッグで自由調整）")
+        self.setToolTip(tr("現在値: {value}（Ctrl+ドラッグで自由調整）", value=value))

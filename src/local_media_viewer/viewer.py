@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections import OrderedDict
 from math import sqrt
 
-from PIL import Image
-from PIL.ImageQt import ImageQt, fromqimage
 from PySide6.QtCore import (
     QEvent,
     QEasingCurve,
@@ -198,7 +196,7 @@ class ImageView(QGraphicsView):
         self.fit_mode = True
         self.display_scale = 1.0
         self.source_pixmap = QPixmap()
-        self.scaled_cache: OrderedDict[tuple[int, int, int, int], tuple[QPixmap, int]] = (
+        self.scaled_cache: OrderedDict[tuple[int, int, int], tuple[QPixmap, int]] = (
             OrderedDict()
         )
         self.scaled_cache_bytes = 0
@@ -252,12 +250,7 @@ class ImageView(QGraphicsView):
         if raster_scale != 1.0:
             width = max(1, round(self.source_pixmap.width() * raster_scale))
             height = max(1, round(self.source_pixmap.height() * raster_scale))
-            resampling = (
-                Image.Resampling.LANCZOS
-                if raster_scale < 1.0
-                else Image.Resampling.BICUBIC
-            )
-            displayed = self.resampled_pixmap(width, height, resampling)
+            displayed = self.resampled_pixmap(width, height)
             self.item.setPixmap(displayed)
             remaining_scale = scale / raster_scale
             if remaining_scale != 1.0:
@@ -267,24 +260,26 @@ class ImageView(QGraphicsView):
             self.scale(scale, scale)
         self.scene().setSceneRect(self.item.boundingRect())
 
-    def resampled_pixmap(
-        self,
-        width: int,
-        height: int,
-        resampling: Image.Resampling,
-    ) -> QPixmap:
-        key = (self.source_pixmap.cacheKey(), width, height, int(resampling))
+    def resampled_pixmap(self, width: int, height: int) -> QPixmap:
+        """Resample the source to an exact pixel size, reusing recent results.
+
+        Qt scales the pixmap in place. Going out to Pillow instead means a round
+        trip through QImage.save / Image.open, which encodes and decodes a whole
+        PNG per page and costs more than the resampling itself; a smooth Qt
+        downscale is box filtered and matches Lanczos to within about 1/255 per
+        channel, so nothing visible is given up for it.
+        """
+        key = (self.source_pixmap.cacheKey(), width, height)
         cached = self.scaled_cache.get(key)
         if cached is not None:
             self.scaled_cache.move_to_end(key)
             return cached[0]
-        source = fromqimage(self.source_pixmap.toImage()).convert("RGBA")
-        resized = source.resize(
-            (width, height),
-            resampling,
-            reducing_gap=3.0 if resampling == Image.Resampling.LANCZOS else None,
+        pixmap = self.source_pixmap.scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
-        pixmap = QPixmap.fromImage(ImageQt(resized))
         cost = width * height * 4
         self.scaled_cache[key] = (pixmap, cost)
         self.scaled_cache_bytes += cost

@@ -22,9 +22,9 @@ def save_pages(folder: Path, count: int = 6) -> None:
         )
 
 
-def make_window(monkeypatch) -> app_module.MainWindow:
+def make_window(monkeypatch, **settings) -> app_module.MainWindow:
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(app_module, "load_settings", ViewerSettings)
+    monkeypatch.setattr(app_module, "load_settings", lambda: ViewerSettings(**settings))
     monkeypatch.setattr(app_module, "save_settings", lambda _settings: None)
     return app_module.MainWindow()
 
@@ -98,7 +98,7 @@ def test_a_spread_turns_two_pages_at_a_time(tmp_path: Path, monkeypatch) -> None
     folder.mkdir()
     save_pages(folder)
 
-    window = make_window(monkeypatch)
+    window = make_window(monkeypatch, spread_cover=False)
     try:
         window.open_path(folder / "0.png")
         window.spread_action.setChecked(True)
@@ -125,7 +125,7 @@ def test_an_odd_last_page_is_shown_on_its_own(tmp_path: Path, monkeypatch) -> No
     folder.mkdir()
     save_pages(folder, count=3)
 
-    window = make_window(monkeypatch)
+    window = make_window(monkeypatch, spread_cover=False)
     try:
         window.open_path(folder / "0.png")
         window.spread_action.setChecked(True)
@@ -141,7 +141,7 @@ def test_spread_composes_both_pages_into_one_view(tmp_path: Path, monkeypatch) -
     folder.mkdir()
     save_pages(folder)
 
-    window = make_window(monkeypatch)
+    window = make_window(monkeypatch, spread_cover=False)
     try:
         window.open_path(folder / "0.png")
         single = window.image_view.source_pixmap.width()
@@ -236,24 +236,52 @@ def test_the_pan_reset_option_returns_to_the_top_of_the_next_page(
         window.close()
 
 
-def test_options_appear_under_the_favorites_behind_a_separator(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_options_live_under_their_own_toolbar_button(tmp_path: Path, monkeypatch) -> None:
     window = make_window(monkeypatch)
     try:
-        menu = window.favorites_menu
-        labels = [action.text() for action in menu.actions() if action.text()]
-        for option in window.option_actions:
-            assert option.text() in labels
+        actions = window.settings_menu.actions()
+        rules = [i for i, action in enumerate(actions) if action.isSeparator()]
 
-        # Exactly one rule divides the favorites from the settings below them.
-        actions = menu.actions()
-        separators = [i for i, action in enumerate(actions) if action.isSeparator()]
-        assert len(separators) == 1
-        after = [a.text() for a in actions[separators[0] + 1 :]]
-        assert after == [option.text() for option in window.option_actions]
+        # Each option group is ruled off, and the language entry closes the menu.
+        assert len(rules) == len(window.option_groups) == 3
+        starts = [0] + [rule + 1 for rule in rules]
+        sections = [
+            [a.text() for a in actions[start:end]]
+            for start, end in zip(starts, rules + [len(actions)])
+        ]
+        for section, group in zip(sections, window.option_groups):
+            assert section == [a.text() for a in group]
+        assert actions[-1].menu() is window.language_menu
+
+        # The spread settings are the ones kept together at the bottom.
+        assert sections[2] == [
+            "見開き表示（2ページ）",
+            "見開きを右送りにする",
+            "1ページ目を表紙として単独表示",
+            "見開きページをずらす",
+        ]
     finally:
         window.close()
+
+
+def test_the_favorites_menu_holds_no_settings(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "お気に入り"
+    folder.mkdir()
+    save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.add_favorite()
+        labels = {action.text() for action in window.favorites_menu.actions()}
+        # A list of bookmarked folders is not where the display options belong.
+        assert labels.isdisjoint({action.text() for action in window.option_actions})
+    finally:
+        window.close()
+
+
+def test_a_fresh_install_starts_with_the_pan_reset_on() -> None:
+    assert ViewerSettings().reset_pan_on_change is True
 
 
 def test_options_survive_a_settings_round_trip(tmp_path: Path, monkeypatch) -> None:
@@ -302,7 +330,7 @@ def test_pages_that_cannot_pair_stay_reachable(tmp_path: Path, monkeypatch) -> N
     Image.new("RGB", (20, 30), "orange").save(folder / "2.png")
     Image.new("RGB", (20, 30), "purple").save(folder / "3.png")
 
-    window = make_window(monkeypatch)
+    window = make_window(monkeypatch, spread_cover=False)
     try:
         window.open_path(folder / "0.png")
         window.spread_action.setChecked(True)
@@ -329,7 +357,7 @@ def test_a_video_is_never_paired_into_a_spread(tmp_path: Path, monkeypatch) -> N
     Image.new("RGB", (20, 30), "blue").save(folder / "2.png")
     Image.new("RGB", (20, 30), "teal").save(folder / "3.png")
 
-    window = make_window(monkeypatch)
+    window = make_window(monkeypatch, spread_cover=False)
     try:
         window.open_path(folder / "0.png")
         window.spread_action.setChecked(True)
@@ -400,5 +428,362 @@ def test_the_side_buttons_turn_pages(tmp_path: Path, monkeypatch) -> None:
             )
         assert steps == [1, -1]
         assert window.displayed_pages == [2]
+    finally:
+        window.close()
+
+
+def test_the_pan_reset_centres_on_the_new_image_not_the_previous_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "パン幅"
+    folder.mkdir()
+    # Different widths: centring on a stale scrollbar range would land wrong.
+    for number, width in enumerate((1200, 700, 2000)):
+        Image.new("RGB", (width, 1600), PAGE_COLORS[number]).save(folder / f"{number}.png")
+
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.resize(400, 360)
+        window.show()
+        app.processEvents()
+        window.reset_pan_action.setChecked(True)
+        window.open_path(folder / "0.png")
+        window.image_view.original_size()
+        app.processEvents()
+
+        for _ in range(2):
+            view = window.image_view
+            view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
+            view.verticalScrollBar().setValue(view.verticalScrollBar().maximum())
+            window.navigate(1)
+            app.processEvents()
+
+            horizontal = window.image_view.horizontalScrollBar()
+            vertical = window.image_view.verticalScrollBar()
+            assert horizontal.maximum() > 0
+            middle = (horizontal.minimum() + horizontal.maximum()) // 2
+            assert horizontal.value() == middle
+            assert vertical.value() == vertical.minimum()
+    finally:
+        window.close()
+
+
+def test_pan_is_left_alone_when_the_option_is_off(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "パン固定"
+    folder.mkdir()
+    for number in range(2):
+        Image.new("RGB", (1200, 1600), PAGE_COLORS[number]).save(folder / f"{number}.png")
+
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.resize(400, 360)
+        window.show()
+        app.processEvents()
+        window.reset_pan_action.setChecked(False)
+        window.open_path(folder / "0.png")
+        window.image_view.original_size()
+        app.processEvents()
+
+        vertical = window.image_view.verticalScrollBar()
+        vertical.setValue(vertical.maximum())
+        kept = vertical.value()
+        assert kept > 0
+
+        window.navigate(1)
+        app.processEvents()
+        assert window.image_view.verticalScrollBar().value() == kept
+    finally:
+        window.close()
+
+
+def test_the_first_page_stands_alone_as_a_cover(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "表紙"
+    folder.mkdir()
+    save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_action.setChecked(True)
+        # Page 1 is the cover, so it is shown on its own and the pairs start
+        # from the page after it.
+        assert window.displayed_pages == [0]
+        assert window.image_view.source_pixmap.width() == 20
+
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
+        window.navigate(1)
+        assert window.displayed_pages == [3, 4]
+        window.navigate(-1)
+        assert window.displayed_pages == [1, 2]
+        window.navigate(-1)
+        assert window.displayed_pages == [0]
+    finally:
+        window.close()
+
+
+def test_moving_to_another_folder_re_covers_the_spread(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "1"
+    second = tmp_path / "2"
+    for folder in (first, second):
+        folder.mkdir()
+        save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(first / "1.png")
+        window.spread_action.setChecked(True)
+        assert window.displayed_pages == [1, 2]
+        assert window.spread_anchor == 1
+
+        # A different book starts over at its own cover rather than inheriting
+        # whatever offset the previous folder was left on.
+        window.open_folder(second, 0)
+        assert window.displayed_pages == [0]
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
+    finally:
+        window.close()
+
+
+def test_an_even_offset_folder_is_re_covered_too(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "1"
+    second = tmp_path / "2"
+    for folder in (first, second):
+        folder.mkdir()
+        save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(first / "1.png")
+        window.spread_action.setChecked(True)
+        window.shift_spread()
+        # Shifting leaves this folder on an even offset.
+        assert window.spread_anchor == 2
+        assert window.displayed_pages == [2, 3]
+
+        window.open_folder(second, 0)
+        assert window.spread_anchor == 1
+        assert window.displayed_pages == [0]
+    finally:
+        window.close()
+
+
+def test_the_cover_option_can_be_turned_off(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "表紙なし"
+    folder.mkdir()
+    save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_action.setChecked(True)
+        assert window.displayed_pages == [0]
+
+        window.spread_cover_action.setChecked(False)
+        # Without the cover rule the very first two pages pair up again.
+        assert window.displayed_pages == [0, 1]
+        window.navigate(1)
+        assert window.displayed_pages == [2, 3]
+    finally:
+        window.close()
+
+
+def test_the_cover_setting_survives_a_round_trip(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "設定"
+    folder.mkdir()
+    save_pages(folder)
+    stored: list[ViewerSettings] = []
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(app_module, "load_settings", ViewerSettings)
+    monkeypatch.setattr(app_module, "save_settings", stored.append)
+    window = app_module.MainWindow()
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_cover_action.setChecked(False)
+    finally:
+        window.close()
+
+    saved = stored[-1]
+    assert saved.spread_cover is False
+
+    monkeypatch.setattr(app_module, "load_settings", lambda: saved)
+    restored = app_module.MainWindow()
+    try:
+        assert restored.spread_cover_action.isChecked() is False
+    finally:
+        restored.close()
+
+
+def test_a_fresh_install_shows_the_first_page_as_a_cover() -> None:
+    assert ViewerSettings().spread_cover is True
+
+
+def test_a_resumed_folder_keeps_its_saved_pairing(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "再開"
+    folder.mkdir()
+    save_pages(folder)
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(app_module, "save_settings", lambda _settings: None)
+    monkeypatch.setattr(
+        app_module,
+        "load_settings",
+        lambda: ViewerSettings(
+            last_path=str(folder / "2.png"), spread_view=True, spread_anchor=2
+        ),
+    )
+    window = app_module.MainWindow()
+    try:
+        # Restoring is not a move into a new folder, so the offset the user
+        # left the book on is kept rather than reset to the cover rule.
+        assert window.spread_anchor == 2
+        assert window.displayed_pages == [2, 3]
+    finally:
+        window.close()
+
+
+def test_shifting_swaps_one_page_out_of_the_pair(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "ずらし"
+    folder.mkdir()
+    save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_action.setChecked(True)
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
+
+        # The far page of the pair stays and becomes the first half of the new
+        # one, so exactly one of the two pages on screen is exchanged.
+        window.shift_spread()
+        assert window.displayed_pages == [2, 3]
+        window.shift_spread()
+        assert window.displayed_pages == [3, 4]
+    finally:
+        window.close()
+
+
+def test_a_shift_holds_for_the_rest_of_the_folder(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "ずらし継続"
+    folder.mkdir()
+    save_pages(folder, count=8)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_action.setChecked(True)
+        window.navigate(1)
+        window.shift_spread()
+        assert window.displayed_pages == [2, 3]
+
+        # Paging on either side keeps the new offset rather than snapping back.
+        window.navigate(1)
+        assert window.displayed_pages == [4, 5]
+        window.navigate(1)
+        assert window.displayed_pages == [6, 7]
+        window.navigate(-1)
+        assert window.displayed_pages == [4, 5]
+        window.navigate(-1)
+        assert window.displayed_pages == [2, 3]
+    finally:
+        window.close()
+
+
+def test_shifting_on_the_last_page_stops_rather_than_wrapping(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "終端"
+    folder.mkdir()
+    save_pages(folder, count=4)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "0.png")
+        window.spread_action.setChecked(True)
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
+        window.shift_spread()
+        assert window.displayed_pages == [2, 3]
+        window.shift_spread()
+        # The last page has no partner left, so it stands on its own.
+        assert window.displayed_pages == [3]
+        # And there is nothing further to shift onto.
+        window.shift_spread()
+        assert window.displayed_pages == [3]
+    finally:
+        window.close()
+
+
+def test_shifting_with_the_spread_off_turns_it_on(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "オフから"
+    folder.mkdir()
+    save_pages(folder)
+
+    window = make_window(monkeypatch, spread_cover=False)
+    try:
+        window.open_path(folder / "2.png")
+        assert window.displayed_pages == [2]
+        window.shift_spread()
+        assert window.spread_action.isChecked() is True
+        assert window.displayed_pages == [2, 3]
+    finally:
+        window.close()
+
+
+def test_a_shift_does_not_survive_a_folder_move(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "1"
+    second = tmp_path / "2"
+    for folder in (first, second):
+        folder.mkdir()
+        save_pages(folder)
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(first / "0.png")
+        window.spread_action.setChecked(True)
+        window.navigate(1)
+        window.shift_spread()
+        assert window.displayed_pages == [2, 3]
+
+        window.open_folder(second, 0)
+        assert window.displayed_pages == [0]
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
+    finally:
+        window.close()
+
+
+def test_a_file_opened_at_startup_does_not_inherit_another_folders_offset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    previous = tmp_path / "前回"
+    opened = tmp_path / "今回"
+    for folder in (previous, opened):
+        folder.mkdir()
+        save_pages(folder)
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(app_module, "save_settings", lambda _settings: None)
+    monkeypatch.setattr(
+        app_module,
+        "load_settings",
+        lambda: ViewerSettings(
+            last_path=str(previous / "2.png"), spread_view=True, spread_anchor=2
+        ),
+    )
+    # Double-clicking a file in a different folder opens a different book, so
+    # the even offset left in the previous one must not pair its cover up.
+    window = app_module.MainWindow(opened / "0.png")
+    try:
+        assert window.current_folder == opened
+        assert window.spread_anchor == 1
+        assert window.displayed_pages == [0]
+        window.navigate(1)
+        assert window.displayed_pages == [1, 2]
     finally:
         window.close()

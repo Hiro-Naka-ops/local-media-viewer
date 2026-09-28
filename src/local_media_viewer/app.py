@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import sys
 from collections import OrderedDict
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QByteArray, QPoint, QTimer, Qt, QUrl
+from PySide6.QtCore import (
+    QByteArray,
+    QCoreApplication,
+    QLibraryInfo,
+    QLocale,
+    QPoint,
+    QTimer,
+    QTranslator,
+    Qt,
+    QUrl,
+)
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
+    QColor,
     QCloseEvent,
     QDragEnterEvent,
     QDropEvent,
@@ -22,6 +35,7 @@ from PySide6.QtGui import (
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QFileDialog,
     QFormLayout,
     QInputDialog,
@@ -42,16 +56,23 @@ from PySide6.QtWidgets import (
 
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import SnappingSlider
+from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
 from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail
 from local_media_viewer.filters import FilterValues, apply_filters
 from local_media_viewer.filmstrip import Filmstrip
+from local_media_viewer import i18n
+from local_media_viewer.i18n import LANGUAGES, language_menu_title, tr
 from local_media_viewer.media import (
     IMAGE_EXTENSIONS,
+    SORT_LABELS,
     VIDEO_EXTENSIONS,
+    SortOrder,
+    file_times,
     media_files,
     sibling_media_folder,
 )
-from local_media_viewer.preloader import ImagePreloader, load_image
+from local_media_viewer.preloader import ImagePreloader, load_frame, load_image
+from local_media_viewer.sorticon import sort_icon
 from local_media_viewer.settings import (
     Favorite,
     ViewerSettings,
@@ -60,6 +81,37 @@ from local_media_viewer.settings import (
 )
 from local_media_viewer.spread import compose_spread, is_animated
 from local_media_viewer.viewer import ImageView, VideoView
+
+
+STATUS_HINT_COLOR = "#98A2B3"
+
+# Qt's own strings (the Yes/No buttons, the colour dialog) come from these.
+QT_TRANSLATIONS = {"ja": "qtbase_ja", "zh": "qtbase_zh_CN", "ko": "qtbase_ko"}
+_qt_translator: QTranslator | None = None
+
+
+def system_language() -> str:
+    """The Windows display language, as a locale name such as ja_JP."""
+    return QLocale.system().name()
+
+
+def install_qt_translation(code: str) -> None:
+    """Swap the translation Qt uses for the widgets it draws itself."""
+    global _qt_translator
+    if _qt_translator is not None:
+        QCoreApplication.removeTranslator(_qt_translator)
+        _qt_translator = None
+    name = QT_TRANSLATIONS.get(code)
+    if name is None:
+        return
+    translator = QTranslator()
+    if translator.load(name, QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        QCoreApplication.installTranslator(translator)
+        _qt_translator = translator
+
+
+def format_file_time(value: float) -> str:
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
 
 
 class MainWindow(QMainWindow):
@@ -79,12 +131,25 @@ class MainWindow(QMainWindow):
         self.animation_cache_bytes = 0
         self.animation_cache_limit = 128 * 1024 * 1024
         self.preloader = ImagePreloader()
+        # Writing settings serialises every favourite thumbnail, so paging does
+        # not do it per page; the last turn within the window wins.
+        self.settings_timer = QTimer(self)
+        self.settings_timer.setSingleShot(True)
+        self.settings_timer.setInterval(600)
+        self.settings_timer.timeout.connect(self.persist_settings)
+        self.spread_probe_cache: dict[Path, bool] = {}
+        self.sort_order = SortOrder.parse(
+            self.settings.sort_key, self.settings.sort_descending
+        )
         self.folder_prompt_open = False
         self.favorites: list[Favorite] = list(self.settings.favorites)
         self.spread_second: Image.Image | None = None
         self.spread_anchor = max(0, self.settings.spread_anchor)
         self.displayed_pages: list[int] = []
         self.pending_pan_reset = False
+        self.line_color = self.settings.line_color
+        self.language_choice = self.settings.language
+        self.apply_language(self.language_choice)
 
         self.setWindowTitle("Local Media Viewer")
         self.setWindowIcon(app_icon())
@@ -116,6 +181,7 @@ class MainWindow(QMainWindow):
         self.player.errorOccurred.connect(self.video_error)
         self.player.positionChanged.connect(self.video_view.update_position)
         self.player.durationChanged.connect(self.video_view.update_duration)
+        self.player.playbackStateChanged.connect(self.show_playback_state)
 
         self.filter_panel = self.create_filter_panel()
         self.splitter = QSplitter()
@@ -133,66 +199,106 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.filmstrip)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
+        # A permanent widget sits at the right-hand end of the status bar and is
+        # left alone by showMessage, so the page count and the passing
+        # notifications never overwrite the dates.
+        # Added first, so it sits to the left of the dates it describes.
+        self.sort_icon_label = QLabel()
+        self.sort_icon_label.setStyleSheet("padding-right: 8px;")
+        self.statusBar().addPermanentWidget(self.sort_icon_label)
+        self.file_times_label = QLabel()
+        self.file_times_label.setStyleSheet(f"color: {STATUS_HINT_COLOR}; padding-right: 6px;")
+        self.statusBar().addPermanentWidget(self.file_times_label)
         self.create_toolbar()
+        self.retranslate_ui()
         self.restore_state(initial_path)
         self.initializing = False
 
     def create_toolbar(self) -> None:
-        self.toolbar = QToolBar("操作")
+        # Texts are filled in by retranslate_ui, so switching language can
+        # relabel everything in place instead of rebuilding the window.
+        self.toolbar = QToolBar()
         self.toolbar.setMovable(False)
         self.addToolBar(self.toolbar)
-        open_file = QAction("ファイルを開く", self)
-        open_folder = QAction("フォルダを開く", self)
-        previous = QAction("前へ", self)
-        next_item = QAction("次へ", self)
-        previous.setShortcuts(
+        self.open_file_action = QAction(self)
+        self.open_folder_action = QAction(self)
+        self.previous_action = QAction(self)
+        self.next_action = QAction(self)
+        self.previous_action.setShortcuts(
             [
                 QKeySequence(Qt.Key.Key_Left),
                 QKeySequence(Qt.Key.Key_Up),
             ]
         )
-        next_item.setShortcuts(
+        self.next_action.setShortcuts(
             [
                 QKeySequence(Qt.Key.Key_Right),
                 QKeySequence(Qt.Key.Key_Down),
             ]
         )
-        previous.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        next_item.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        previous.setToolTip("前へ (← / ↑)")
-        next_item.setToolTip("次へ (→ / ↓)")
-        fit = QAction("フィット／原寸", self)
-        fit.setShortcut(QKeySequence(Qt.Key.Key_Space))
-        fit.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        fit.setToolTip("フィット／原寸 (Space)")
-        open_file.triggered.connect(self.choose_file)
-        open_folder.triggered.connect(self.choose_folder)
-        previous.triggered.connect(lambda: self.navigate(-1))
-        next_item.triggered.connect(lambda: self.navigate(1))
-        fit.triggered.connect(self.image_view.toggle_fit)
-        self.filter_action = QAction("フィルター", self)
+        self.previous_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.next_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.fit_action = QAction(self)
+        self.fit_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
+        self.fit_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.open_file_action.triggered.connect(self.choose_file)
+        self.open_folder_action.triggered.connect(self.choose_folder)
+        self.previous_action.triggered.connect(lambda: self.navigate(-1))
+        self.next_action.triggered.connect(lambda: self.navigate(1))
+        self.fit_action.triggered.connect(self.image_view.toggle_fit)
+        # Only offered from the right-click menu, which is the one menu left
+        # in full screen. Enter itself is handled by the shortcuts below: giving
+        # this action the same keys would make them ambiguous and fire neither.
+        self.fullscreen_action = QAction(self)
+        self.fullscreen_action.setCheckable(True)
+        self.fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        self.filter_action = QAction(self)
         self.filter_action.setCheckable(True)
         self.filter_action.setChecked(self.settings.filter_panel_visible)
         self.filter_action.toggled.connect(self.toggle_filter_panel)
-        self.filmstrip_action = QAction("フィルムストリップ", self)
+        self.filmstrip_action = QAction(self)
         self.filmstrip_action.setCheckable(True)
         self.filmstrip_action.setChecked(self.settings.filmstrip_visible)
         self.filmstrip_action.toggled.connect(self.toggle_filmstrip)
-        self.option_actions = self.create_option_actions()
+        self.option_groups = self.create_option_actions()
+        self.option_actions = [
+            action for group in self.option_groups for action in group
+        ]
+        self.language_menu = self.create_language_menu()
+        self.play_action = QAction(self)
+        self.play_action.triggered.connect(self.toggle_video_playback)
+        self.stop_action = QAction(self)
+        self.stop_action.triggered.connect(self.stop_video)
+        self.mute_action = QAction(self)
+        self.mute_action.setCheckable(True)
+        self.mute_action.toggled.connect(self.audio.setMuted)
+        self.volume_label = QLabel()
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.settings.volume)
         self.volume_slider.setFixedWidth(110)
-        self.volume_slider.setToolTip(f"音量: {self.settings.volume}")
         self.volume_slider.valueChanged.connect(self.set_volume)
-        self.toolbar.addActions([open_file, open_folder, previous, next_item, fit])
+        # Left to right: getting a file, moving through it, the panels around
+        # the picture, then the two drop-downs, and the video controls at the
+        # far end, where appearing and vanishing shifts nothing else.
+        self.toolbar.addActions([self.open_file_action, self.open_folder_action])
         self.toolbar.addSeparator()
-        self.toolbar.addActions([self.filter_action, self.filmstrip_action])
+        self.toolbar.addActions([self.previous_action, self.next_action, self.fit_action])
         self.toolbar.addSeparator()
+        self.toolbar.addActions([self.filmstrip_action, self.filter_action])
+        self.toolbar.addSeparator()
+        self.toolbar.addWidget(self.create_settings_button())
         self.toolbar.addWidget(self.create_favorites_button())
-        self.toolbar.addSeparator()
-        self.toolbar.addWidget(QLabel("音量"))
-        self.toolbar.addWidget(self.volume_slider)
+        # Hidden through the QActions addWidget/addSeparator hand back: a
+        # toolbar re-shows a widget it holds whenever it lays itself out, so
+        # hiding the QSlider itself does not stick.
+        self.video_toolbar_actions = [
+            self.toolbar.addSeparator(),
+            *self.add_toolbar_actions([self.play_action, self.stop_action, self.mute_action]),
+            self.toolbar.addWidget(self.volume_label),
+            self.toolbar.addWidget(self.volume_slider),
+        ]
+        self.show_video_controls(False)
         self.fullscreen_shortcuts = [
             QShortcut(QKeySequence(Qt.Key.Key_Return), self),
             QShortcut(QKeySequence(Qt.Key.Key_Enter), self),
@@ -200,42 +306,282 @@ class MainWindow(QMainWindow):
         for shortcut in self.fullscreen_shortcuts:
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(self.toggle_fullscreen)
-        self.refresh_favorites()
         self.toggle_filter_panel(self.settings.filter_panel_visible)
         self.toggle_filmstrip(self.settings.filmstrip_visible)
 
-    def create_option_actions(self) -> list[QAction]:
-        """Checkable settings shared by the favorites menu and the right-click menu."""
-        self.reset_pan_action = QAction("次の画像で表示位置を戻す", self)
+    def add_toolbar_actions(self, actions: list[QAction]) -> list[QAction]:
+        self.toolbar.addActions(actions)
+        return actions
+
+    def show_video_controls(self, visible: bool) -> None:
+        """Offer playback and sound only while a video is on screen.
+
+        A still picture has nothing to play and no sound, so the controls would
+        only take room on the toolbar and invite clicks that do nothing.
+        """
+        for action in self.video_toolbar_actions:
+            action.setVisible(visible)
+
+    def create_option_actions(self) -> list[list[QAction]]:
+        """Settings shared by the 表示設定 menu and the right-click menu."""
+        # "Pan" is the user-facing name for the drag position of a zoomed image.
+        self.reset_pan_action = QAction(self)
         self.reset_pan_action.setCheckable(True)
         self.reset_pan_action.setChecked(self.settings.reset_pan_on_change)
         self.reset_pan_action.toggled.connect(self.change_reset_pan)
-        self.spread_action = QAction("見開き表示（2ページ）", self)
+        self.spread_action = QAction(self)
         self.spread_action.setCheckable(True)
         self.spread_action.setChecked(self.settings.spread_view)
         self.spread_action.toggled.connect(self.toggle_spread)
-        self.spread_rtl_action = QAction("見開きを右送りにする", self)
+        self.spread_rtl_action = QAction(self)
         self.spread_rtl_action.setCheckable(True)
         self.spread_rtl_action.setChecked(self.settings.spread_rtl)
         self.spread_rtl_action.toggled.connect(self.change_spread_direction)
-        self.spread_here_action = QAction("このページから見開きを開始", self)
-        self.spread_here_action.triggered.connect(self.start_spread_here)
+        self.spread_cover_action = QAction(self)
+        self.spread_cover_action.setCheckable(True)
+        self.spread_cover_action.setChecked(self.settings.spread_cover)
+        self.spread_cover_action.toggled.connect(self.change_spread_cover)
+        self.effect_menu = self.create_effect_menu()
+        self.sort_menu = self.create_sort_menu()
+        self.spread_shift_action = QAction(self)
+        self.spread_shift_action.triggered.connect(self.shift_spread)
+        # Ruled apart in the menus: the panels around the picture, how the
+        # picture itself is drawn and ordered, then how pages are paired.
         return [
-            self.filmstrip_action,
-            self.filter_action,
-            self.reset_pan_action,
-            self.spread_action,
-            self.spread_rtl_action,
-            self.spread_here_action,
+            [
+                self.filmstrip_action,
+                self.filter_action,
+            ],
+            [
+                self.effect_menu.menuAction(),
+                self.sort_menu.menuAction(),
+                self.reset_pan_action,
+            ],
+            [
+                self.spread_action,
+                self.spread_rtl_action,
+                self.spread_cover_action,
+                self.spread_shift_action,
+            ],
         ]
+
+    def create_effect_menu(self) -> QMenu:
+        """The エフェクト submenu: one choice at a time, plus its colour picker."""
+        menu = QMenu(self)
+        self.effect_actions: dict[str, QAction] = {}
+        self.effect_choices = QActionGroup(self)
+        self.effect_choices.setExclusive(True)
+        for key, _label in EFFECT_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(key == self.settings.effect)
+            action.triggered.connect(lambda _checked=False, name=key: self.choose_effect(name))
+            self.effect_choices.addAction(action)
+            menu.addAction(action)
+            self.effect_actions[key] = action
+        if not any(action.isChecked() for action in self.effect_actions.values()):
+            self.effect_actions[NONE].setChecked(True)
+        menu.addSeparator()
+        self.line_color_action = QAction(self)
+        self.line_color_action.triggered.connect(self.choose_line_color)
+        menu.addAction(self.line_color_action)
+        return menu
+
+    def create_sort_menu(self) -> QMenu:
+        """The 並び順 submenu: one field at a time, plus the direction."""
+        menu = QMenu(self)
+        self.sort_actions: dict[str, QAction] = {}
+        self.sort_choices = QActionGroup(self)
+        self.sort_choices.setExclusive(True)
+        for key, _label in SORT_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(key == self.sort_order.key)
+            action.triggered.connect(lambda _checked=False, name=key: self.choose_sort_key(name))
+            self.sort_choices.addAction(action)
+            menu.addAction(action)
+            self.sort_actions[key] = action
+        menu.addSeparator()
+        self.sort_descending_action = QAction(self)
+        self.sort_descending_action.setCheckable(True)
+        self.sort_descending_action.setChecked(self.sort_order.descending)
+        self.sort_descending_action.toggled.connect(self.change_sort_direction)
+        menu.addAction(self.sort_descending_action)
+        return menu
+
+    def create_language_menu(self) -> QMenu:
+        """The 言語 submenu: follow Windows, or one language picked outright."""
+        menu = QMenu(self)
+        self.language_actions: dict[str, QAction] = {}
+        self.language_choices = QActionGroup(self)
+        self.language_choices.setExclusive(True)
+        for code, name in [(i18n.AUTO, ""), *LANGUAGES]:
+            # A language's own name never changes with the UI language, so it is
+            # set once here; only the "follow system" entry gets relabelled.
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, value=code: self.choose_language(value)
+            )
+            self.language_choices.addAction(action)
+            menu.addAction(action)
+            self.language_actions[code] = action
+            if code == i18n.AUTO:
+                menu.addSeparator()
+        chosen = self.language_actions.get(self.language_choice)
+        (chosen or self.language_actions[i18n.AUTO]).setChecked(True)
+        return menu
+
+    def apply_language(self, choice: str) -> None:
+        code = i18n.resolve(choice, system_language())
+        i18n.set_language(code)
+        install_qt_translation(code)
+
+    def choose_language(self, choice: str) -> None:
+        self.language_actions[choice].setChecked(True)
+        if choice == self.language_choice:
+            return
+        self.language_choice = choice
+        self.apply_language(choice)
+        self.retranslate_ui()
+        self.persist_settings()
+
+    def retranslate_ui(self) -> None:
+        """Put every label in the current language."""
+        self.toolbar.setWindowTitle(tr("操作"))
+        self.open_file_action.setText(tr("ファイルを開く"))
+        self.open_folder_action.setText(tr("フォルダを開く"))
+        self.previous_action.setText(tr("前へ"))
+        self.previous_action.setToolTip(f"{tr('前へ')} (← / ↑)")
+        self.next_action.setText(tr("次へ"))
+        self.next_action.setToolTip(f"{tr('次へ')} (→ / ↓)")
+        self.fit_action.setText(tr("フィット／原寸"))
+        self.fit_action.setToolTip(f"{tr('フィット／原寸')} (Space)")
+        self.fullscreen_action.setText(tr("全画面表示"))
+        self.filter_action.setText(tr("フィルター"))
+        self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
+        self.filmstrip_action.setText(tr("フィルムストリップ"))
+        self.reset_pan_action.setText(tr("パン位置を毎回初期化する"))
+        self.spread_action.setText(tr("見開き表示（2ページ）"))
+        self.spread_rtl_action.setText(tr("見開きを右送りにする"))
+        self.spread_cover_action.setText(tr("1ページ目を表紙として単独表示"))
+        self.spread_shift_action.setText(tr("見開きページをずらす"))
+        self.spread_shift_action.setToolTip(tr("組み合わせを1ページ分ずらす"))
+        self.effect_menu.setTitle(tr("エフェクト"))
+        for key, label in EFFECT_LABELS:
+            self.effect_actions[key].setText(tr(label))
+        self.line_color_action.setText(tr("線の色を選ぶ…"))
+        self.sort_menu.setTitle(tr("並び順"))
+        for key, label in SORT_LABELS:
+            self.sort_actions[key].setText(tr(label))
+        self.sort_descending_action.setText(tr("降順"))
+        self.language_menu.setTitle(language_menu_title())
+        self.language_actions[i18n.AUTO].setText(tr("システムに合わせる"))
+        self.settings_button.setText(f"{tr('表示設定')} ▾")
+        self.settings_button.setToolTip(tr("表示・並び順・見開き・言語の設定"))
+        self.favorites_button.setText(f"{tr('お気に入り')} ▾")
+        self.favorites_button.setToolTip(tr("登録したフォルダを開く"))
+        self.show_playback_state()
+        self.stop_action.setText(tr("■ 停止"))
+        self.stop_action.setToolTip(tr("停止して先頭に戻す"))
+        self.mute_action.setText(tr("ミュート"))
+        self.volume_label.setText(tr("音量"))
+        self.volume_slider.setToolTip(f"{tr('音量')}: {self.volume_slider.value()}")
+        self.filter_title.setText(tr("表示フィルター"))
+        self.filter_note.setText(tr("元ファイルは変更されません"))
+        for label, text in self.filter_labels:
+            label.setText(tr(text))
+        for slider in (self.brightness, self.contrast, self.gamma, self.hue):
+            slider.retranslate()
+        self.reset_filters_button.setText(tr("フィルターをリセット"))
+        self.video_filter_note.setText(tr("動画には初期版では適用されません"))
+        self.show_sort_indicator()
+        # The favorites menu writes its fixed texts as it fills itself.
+        self.refresh_favorites()
+        if 0 <= self.index < len(self.files):
+            self.show_page_status()
+
+    def choose_sort_key(self, name: str) -> None:
+        self.sort_actions[name].setChecked(True)
+        self.apply_sort_order(SortOrder(name, self.sort_descending_action.isChecked()))
+
+    def change_sort_direction(self, descending: bool) -> None:
+        self.apply_sort_order(SortOrder(self.sort_order.key, descending))
+
+    def apply_sort_order(self, order: SortOrder) -> None:
+        """Re-list the folder in a new order, staying on the same picture.
+
+        The file being looked at is found again by path rather than by index,
+        because reordering moves it; jumping to whatever landed on the old
+        index would lose the reader's place.
+        """
+        if order == self.sort_order:
+            return
+        self.sort_order = order
+        self.show_sort_indicator()
+        self.persist_settings()
+        if self.current_folder is None:
+            return
+        showing = self.files[self.index] if 0 <= self.index < len(self.files) else None
+        files = media_files(self.current_folder, self.sort_order)
+        if not files:
+            return
+        self.files = files
+        self.index = files.index(showing) if showing in files else 0
+        # The running order changed, so the pairing is counted afresh.
+        self.spread_anchor = self.default_spread_anchor()
+        self.show_current()
+
+    def current_effect(self) -> str:
+        for key, action in self.effect_actions.items():
+            if action.isChecked():
+                return key
+        return NONE
+
+    def choose_effect(self, name: str) -> None:
+        self.effect_actions[name].setChecked(True)
+        self.persist_settings()
+        self.redraw_current_image()
+
+    def choose_line_color(self) -> None:
+        chosen = QColorDialog.getColor(
+            QColor(self.line_color), self, tr("線の色"), QColorDialog.ColorDialogOption.DontUseNativeDialog
+        )
+        if not chosen.isValid():
+            return
+        self.line_color = chosen.name()
+        # Picking a colour is also how this effect gets switched on.
+        self.choose_effect(LINE_COLOR)
+
+    def redraw_current_image(self) -> None:
+        if self.stack.currentWidget() is not self.image_view:
+            return
+        if self.image is not None:
+            self.clear_animation_cache()
+            self.render_frame()
+        elif not self.image_view.source_pixmap.isNull():
+            # The page came in by the direct route, so there is no Pillow image
+            # to re-render from: switching a filter or effect on reloads it.
+            self.show_current()
 
     def change_reset_pan(self, _enabled: bool) -> None:
         self.persist_settings()
 
+    def default_spread_anchor(self) -> int:
+        """Where pairing starts in a folder that was just opened.
+
+        With the cover option on the anchor sits on the second page, which
+        leaves page 1 on its own and runs the pairs 2-3, 4-5 from there.
+        """
+        return 1 if self.spread_cover_action.isChecked() else 0
+
     def toggle_spread(self, enabled: bool) -> None:
         if enabled:
-            # The page it was switched on at becomes the first half of the spread.
-            self.spread_anchor = max(0, self.index)
+            # The page it was switched on at becomes the first half of the
+            # spread, except that a cover is left standing on its own.
+            self.spread_anchor = (
+                self.default_spread_anchor() if self.index <= 0 else self.index
+            )
         self.persist_settings()
         self.show_current()
 
@@ -243,23 +589,41 @@ class MainWindow(QMainWindow):
         self.persist_settings()
         self.show_current()
 
-    def start_spread_here(self) -> None:
-        self.spread_anchor = max(0, self.index)
+    def change_spread_cover(self, _enabled: bool) -> None:
+        self.spread_anchor = self.default_spread_anchor()
+        self.persist_settings()
+        self.show_current()
+
+    def shift_spread(self) -> None:
+        """Move the split one page along, swapping one half of the pair out.
+
+        The page on the far side of the split stays on screen and becomes the
+        first half of the new pair, so 2-3 becomes 3-4: one page is exchanged
+        rather than the whole spread jumping. Anchoring on the current page
+        instead would do nothing at all, because show_current leaves the index
+        sitting on the first half of the pair already on screen.
+        """
         if not self.spread_action.isChecked():
-            self.spread_action.setChecked(True)  # toggle_spread redraws
+            self.spread_action.setChecked(True)  # toggle_spread anchors and redraws
             return
+        target = min(self.index + 1, len(self.files) - 1)
+        if target == self.index:
+            return
+        self.spread_anchor = target
+        self.index = target
         self.persist_settings()
         self.show_current()
 
     def create_filter_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        title = QLabel("表示フィルター")
-        title.setStyleSheet("font-size: 16px; font-weight: 700;")
-        note = QLabel("元ファイルは変更されません")
-        note.setStyleSheet("color: #667085;")
-        layout.addWidget(title)
-        layout.addWidget(note)
+        self.filter_title = QLabel()
+        self.filter_title.setStyleSheet("font-size: 16px; font-weight: 700;")
+        self.filter_note = QLabel()
+        self.filter_note.setWordWrap(True)
+        self.filter_note.setStyleSheet("color: #667085;")
+        layout.addWidget(self.filter_title)
+        layout.addWidget(self.filter_note)
         form = QFormLayout()
         self.brightness = self.make_slider(-100, 100, self.settings.brightness, 0)
         self.contrast = self.make_slider(-100, 100, self.settings.contrast, 0)
@@ -267,15 +631,22 @@ class MainWindow(QMainWindow):
             20, 300, round(self.settings.gamma * 100), 100, divisions=14
         )
         self.hue = self.make_slider(-180, 180, self.settings.hue, 0)
-        form.addRow("明るさ", self.brightness)
-        form.addRow("コントラスト", self.contrast)
-        form.addRow("ガンマ", self.gamma)
-        form.addRow("色相", self.hue)
+        # Kept with their i18n keys so retranslate_ui can relabel the rows.
+        self.filter_labels: list[tuple[QLabel, str]] = []
+        for text, slider in [
+            ("明るさ", self.brightness),
+            ("コントラスト", self.contrast),
+            ("ガンマ", self.gamma),
+            ("色相", self.hue),
+        ]:
+            label = QLabel()
+            form.addRow(label, slider)
+            self.filter_labels.append((label, text))
         layout.addLayout(form)
-        reset = QPushButton("フィルターをリセット")
-        reset.clicked.connect(self.reset_filters)
-        layout.addWidget(reset)
-        self.video_filter_note = QLabel("動画には初期版では適用されません")
+        self.reset_filters_button = QPushButton()
+        self.reset_filters_button.clicked.connect(self.reset_filters)
+        layout.addWidget(self.reset_filters_button)
+        self.video_filter_note = QLabel()
         self.video_filter_note.setWordWrap(True)
         self.video_filter_note.setStyleSheet("color: #98A2B3;")
         layout.addWidget(self.video_filter_note)
@@ -323,35 +694,63 @@ class MainWindow(QMainWindow):
 
     def choose_file(self) -> None:
         start = str(self.current_folder or Path.home())
-        selected, _ = QFileDialog.getOpenFileName(self, "画像・動画を開く", start, "Media files (*)")
+        selected, _ = QFileDialog.getOpenFileName(
+            self, tr("画像・動画を開く"), start, f"{tr('メディアファイル')} (*)"
+        )
         if selected:
             self.open_path(Path(selected))
 
     def choose_folder(self) -> None:
         start = str(self.current_folder or Path.home())
-        selected = QFileDialog.getExistingDirectory(self, "フォルダを開く", start)
+        selected = QFileDialog.getExistingDirectory(self, tr("フォルダを開く"), start)
         if selected:
             self.open_folder(Path(selected), 0)
+
+    def resumed_folder(self) -> Path | None:
+        """The folder the last session was left in, if there was one."""
+        return Path(self.settings.last_path).parent if self.settings.last_path else None
+
+    def enter_folder(self, folder: Path) -> None:
+        """Move into a folder, starting its page pairing over.
+
+        Each folder is its own book, so the spread is re-anchored rather than
+        carrying another folder's offset across and pulling the new cover into
+        a pair with the first inside page. The one exception is reopening the
+        very folder the last session was left in, which resumes on the offset
+        it was left on; a file handed in on the command line is a different
+        book even at startup, so it does not inherit that offset.
+        """
+        if folder == self.current_folder:
+            return
+        resuming = self.initializing and folder == self.resumed_folder()
+        self.current_folder = folder
+        self.spread_probe_cache.clear()
+        if not resuming:
+            self.spread_anchor = self.default_spread_anchor()
 
     def open_path(self, path: Path) -> None:
         if path.is_dir():
             self.open_folder(path, 0)
             return
-        files = media_files(path.parent)
+        files = media_files(path.parent, self.sort_order)
         if path not in files:
-            QMessageBox.warning(self, "非対応形式", f"対応していないファイルです。\n{path.name}")
+            QMessageBox.warning(
+                self, tr("非対応形式"), tr("対応していないファイルです。\n{name}", name=path.name)
+            )
             return
-        self.current_folder = path.parent
+        self.enter_folder(path.parent)
         self.files = files
         self.index = files.index(path)
         self.show_current()
 
     def open_folder(self, folder: Path, index: int) -> None:
-        files = media_files(folder)
+        files = media_files(folder, self.sort_order)
         if not files:
-            QMessageBox.information(self, "メディアなし", f"対応ファイルがありません。\n{folder}")
+            QMessageBox.information(
+                self, tr("メディアなし"), tr("対応ファイルがありません。\n{folder}", folder=folder)
+            )
             return
-        self.current_folder = folder
+        self.enter_folder(folder)
         self.files = files
         self.index = index if index >= 0 else len(files) - 1
         self.show_current()
@@ -365,11 +764,18 @@ class MainWindow(QMainWindow):
         path = self.files[index]
         if path.suffix.lower() in VIDEO_EXTENSIONS:
             return False
+        cached = self.spread_probe_cache.get(path)
+        if cached is not None:
+            return cached
         try:
             with Image.open(path) as probe:
-                return not is_animated(probe)
+                result = not is_animated(probe)
         except (OSError, ValueError):
-            return False
+            result = False
+        # Opening both halves on every page turn re-read the headers each time;
+        # the answer only depends on the file, so it is kept for the folder.
+        self.spread_probe_cache[path] = result
+        return result
 
     def spread_pages(self) -> list[int]:
         """The one or two file indices that make up the current view.
@@ -388,7 +794,12 @@ class MainWindow(QMainWindow):
     def load_second_page(self, index: int) -> None:
         path = self.files[index]
         try:
-            self.spread_second = self.preloader.take(path) or load_image(path)
+            # A spread is composed by Pillow, so the partner is always wanted as
+            # a Pillow image even if the preloader happens to hold a QImage.
+            frame = self.preloader.take(path, plain=False)
+            self.spread_second = (
+                frame.image if frame is not None and frame.image is not None else load_image(path)
+            )
         except (OSError, ValueError):
             self.spread_second = None
 
@@ -403,9 +814,11 @@ class MainWindow(QMainWindow):
         self.stop_current()
         self.setWindowTitle(f"{path.name} — Local Media Viewer")
         self.settings.last_path = str(path)
-        self.persist_settings()
+        self.persist_settings_soon()
         self.displayed_pages = [self.index]
-        if path.suffix.lower() in VIDEO_EXTENSIONS:
+        is_video = path.suffix.lower() in VIDEO_EXTENSIONS
+        self.show_video_controls(is_video)
+        if is_video:
             self.stack.setCurrentWidget(self.video_view)
             self.video_view.prepare_media()
             self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -415,25 +828,88 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.image_view)
             self.video_view.update_duration(0)
             try:
-                self.image = self.preloader.take(path) or load_image(path)
-                if len(pages) > 1:
-                    self.load_second_page(pages[1])
-                    # Keep the pair as the step unit even if the partner
-                    # failed to load, so paging cannot stall on it.
-                    self.displayed_pages = pages
+                plain = self.plain_view()
+                frame = self.preloader.take(path, plain) or load_frame(path, plain)
                 self.frame_index = 0
                 self.pending_pan_reset = self.reset_pan_action.isChecked()
-                self.render_frame()
+                if frame.qimage is not None:
+                    # Nothing for Pillow to do, so the decoded bitmap goes
+                    # straight to the view.
+                    self.image = None
+                    self.image_view.set_pixmap(
+                        QPixmap.fromImage(frame.qimage), self.pending_pan_reset
+                    )
+                    self.pending_pan_reset = False
+                else:
+                    self.image = frame.image
+                    if len(pages) > 1:
+                        self.load_second_page(pages[1])
+                        # Keep the pair as the step unit even if the partner
+                        # failed to load, so paging cannot stall on it.
+                        self.displayed_pages = pages
+                    self.render_frame()
             except (OSError, ValueError) as error:
-                QMessageBox.warning(self, "画像を開けません", f"{path.name}\n{error}")
+                QMessageBox.warning(self, tr("画像を開けません"), f"{path.name}\n{error}")
         self.show_page_status()
         self.preload_nearby_images()
+
+    def plain_view(self) -> bool:
+        """Whether the page can go from the decoder straight to the screen.
+
+        With no filter, no effect and no spread there is nothing for Pillow to
+        do, and routing the bitmap through it only to hand it back to Qt costs
+        more than the decode itself.
+        """
+        return (
+            self.filter_values() == FilterValues()
+            and self.current_effect() == NONE
+            and not self.spread_action.isChecked()
+        )
 
     def show_page_status(self) -> None:
         pages = self.displayed_pages or [self.index]
         numbers = "-".join(str(page + 1) for page in pages)
         self.statusBar().showMessage(
             f"{numbers} / {len(self.files)}　{self.files[pages[0]]}"
+        )
+        self.show_file_times(self.files[pages[0]])
+
+    def show_sort_indicator(self) -> None:
+        """Mark the current order beside the dates it applies to.
+
+        A picture rather than words: the status bar already carries a page
+        count, a path and two timestamps, and another phrase among them reads
+        as clutter.
+        """
+        pixmap = sort_icon(
+            self.sort_order.key,
+            self.sort_order.descending,
+            self.sort_icon_label.fontMetrics().height(),
+            STATUS_HINT_COLOR,
+            self.devicePixelRatioF(),
+        )
+        self.sort_icon_label.setPixmap(pixmap)
+        field = tr(dict(SORT_LABELS).get(self.sort_order.key, ""))
+        way = tr("降順" if self.sort_order.descending else "昇順")
+        self.sort_icon_label.setToolTip(tr("並び順: {field}（{way}）", field=field, way=way))
+
+    def show_file_times(self, path: Path) -> None:
+        """Put the file's dates at the right-hand end of the status bar.
+
+        The status bar is hidden along with the toolbar in full screen, so this
+        follows it out of the way without needing to be handled separately.
+        """
+        times = file_times(path)
+        if times is None:
+            self.file_times_label.clear()
+            return
+        created, modified = times
+        self.file_times_label.setText(
+            tr(
+                "作成 {created}　更新 {modified}",
+                created=format_file_time(created),
+                modified=format_file_time(modified),
+            )
         )
 
     def preload_nearby_images(self) -> None:
@@ -444,7 +920,34 @@ class MainWindow(QMainWindow):
                     path = self.files[target]
                     if path.suffix.lower() in IMAGE_EXTENSIONS:
                         nearby.append(path)
-        self.preloader.preload(nearby)
+        self.preloader.preload(nearby, self.plain_view())
+
+    def create_settings_button(self) -> QToolButton:
+        """The toolbar's 表示設定 drop-down.
+
+        Kept apart from お気に入り: the two have nothing to do with each other,
+        and a list of bookmarked folders is no place to go looking for how the
+        pages are laid out. The actions themselves belong to the window, so the
+        right-click menu shows the very same ones.
+        """
+        self.settings_menu = QMenu(self)
+        for group in self.option_groups:
+            self.settings_menu.addActions(group)
+            self.settings_menu.addSeparator()
+        # Language lives here only: it is set once, not while reading, so it
+        # has no place in the right-click menu.
+        self.settings_menu.addMenu(self.language_menu)
+        self.settings_button = QToolButton()
+        # Text-only button that drops its own menu, matching the favorites one:
+        # attaching the menu to the button makes the style paint a stray arrow.
+        self.settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.settings_button.setAutoRaise(True)
+        self.settings_button.clicked.connect(self.show_settings_menu)
+        return self.settings_button
+
+    def show_settings_menu(self) -> None:
+        button = self.settings_button
+        self.settings_menu.popup(button.mapToGlobal(QPoint(0, button.height())))
 
     def create_favorites_button(self) -> QToolButton:
         self.favorites_menu = FavoritesMenu()
@@ -455,8 +958,6 @@ class MainWindow(QMainWindow):
         self.favorites_button = QToolButton()
         # A plain text button that drops its own menu: attaching the menu to the
         # button instead makes the style paint a stray arrow beside the label.
-        self.favorites_button.setText("お気に入り ▾")
-        self.favorites_button.setToolTip("登録したお気に入りを開く")
         self.favorites_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.favorites_button.setAutoRaise(True)
         self.favorites_button.clicked.connect(self.show_favorites_menu)
@@ -475,7 +976,7 @@ class MainWindow(QMainWindow):
             self.favorites_menu.move(corner)
 
     def refresh_favorites(self) -> None:
-        self.favorites_menu.set_favorites(self.favorites, self.option_actions)
+        self.favorites_menu.set_favorites(self.favorites)
 
     def current_thumbnail(self) -> QPixmap:
         if self.stack.currentWidget() is self.video_view:
@@ -486,9 +987,19 @@ class MainWindow(QMainWindow):
         if self.current_folder is None:
             return
         menu = QMenu(self)
-        register = menu.addAction("お気に入りに登録")
+        register = menu.addAction(tr("お気に入りに登録"))
         menu.addSeparator()
-        menu.addActions(self.option_actions)
+        # The toolbar is gone in full screen, so this menu has to carry the way
+        # back out as well as fitting, which is otherwise only on the toolbar.
+        self.fullscreen_action.setChecked(self.isFullScreen())
+        menu.addActions([self.fit_action, self.fullscreen_action])
+        if self.stack.currentWidget() is self.video_view:
+            # The toolbar is hidden in full screen, so playback is offered here too.
+            menu.addSeparator()
+            menu.addActions([self.play_action, self.stop_action, self.mute_action])
+        for group in self.option_groups:
+            menu.addSeparator()
+            menu.addActions(group)
         chosen = menu.exec(position)
         menu.deleteLater()
         if chosen is register:
@@ -509,7 +1020,7 @@ class MainWindow(QMainWindow):
         self.favorites = [*self.favorites, favorite]
         self.refresh_favorites()
         self.persist_settings()
-        self.statusBar().showMessage(f"お気に入りに登録しました: {favorite.name}", 3000)
+        self.statusBar().showMessage(tr("お気に入りに登録しました: {name}", name=favorite.name), 3000)
 
     def remove_favorite(self, index: int) -> None:
         if not 0 <= index < len(self.favorites):
@@ -518,7 +1029,7 @@ class MainWindow(QMainWindow):
         self.favorites = self.favorites[:index] + self.favorites[index + 1 :]
         self.refresh_favorites()
         self.persist_settings()
-        self.statusBar().showMessage(f"お気に入りから解除しました: {removed.name}", 3000)
+        self.statusBar().showMessage(tr("お気に入りから解除しました: {name}", name=removed.name), 3000)
 
     def move_favorite(self, index: int, group: str) -> None:
         if not 0 <= index < len(self.favorites):
@@ -527,14 +1038,16 @@ class MainWindow(QMainWindow):
         self.favorites = self.favorites[:index] + [moved] + self.favorites[index + 1 :]
         self.refresh_favorites()
         self.persist_settings()
-        where = group or "フォルダなし"
-        self.statusBar().showMessage(f"{moved.name} を「{where}」へ移動しました", 3000)
+        where = group or tr("フォルダなし")
+        self.statusBar().showMessage(
+            tr("{name} を「{group}」へ移動しました", name=moved.name, group=where), 3000
+        )
 
     def name_new_group(self, index: int) -> None:
         if not 0 <= index < len(self.favorites):
             return
         name, accepted = QInputDialog.getText(
-            self, "新しいフォルダ", "お気に入りをまとめるフォルダ名"
+            self, tr("新しいフォルダ"), tr("お気に入りをまとめるフォルダ名")
         )
         if accepted and name.strip():
             self.move_favorite(index, name.strip())
@@ -550,8 +1063,8 @@ class MainWindow(QMainWindow):
         if not target.is_dir():
             QMessageBox.information(
                 self,
-                "フォルダなし",
-                f"お気に入りのフォルダが見つかりません。\n{folder}",
+                tr("フォルダが見つかりません"),
+                tr("お気に入りのフォルダが見つかりません。\n{path}", path=target),
             )
             return
         self.open_folder(target, 0)
@@ -581,6 +1094,8 @@ class MainWindow(QMainWindow):
                 )
             values = self.filter_values()
             displayed = frame if values == FilterValues() else apply_filters(frame, values)
+            # The effect goes last, so it decides the final look.
+            displayed = apply_effect(displayed, self.current_effect(), self.line_color)
             pixmap = QPixmap.fromImage(ImageQt(displayed))
             duration = max(20, int(self.image.info.get("duration", 100)))
             if frame_count > 1:
@@ -615,9 +1130,7 @@ class MainWindow(QMainWindow):
 
     def filters_changed(self, _value: int) -> None:
         self.persist_settings()
-        if self.stack.currentWidget() is self.image_view and self.image is not None:
-            self.clear_animation_cache()
-            self.render_frame()
+        self.redraw_current_image()
 
     def navigate(self, direction: int) -> None:
         if self.folder_prompt_open:
@@ -631,17 +1144,20 @@ class MainWindow(QMainWindow):
             return
         if self.current_folder is None:
             return
-        folder = sibling_media_folder(self.current_folder, direction)
+        folder = sibling_media_folder(self.current_folder, direction, self.sort_order)
         if folder is None:
             # No neighbouring folder: keep showing the current media instead of warning.
             return
-        label = "次" if direction > 0 else "前"
+        if direction > 0:
+            title, question = "次のフォルダへ移動", "次のフォルダを開きますか？\n{name}"
+        else:
+            title, question = "前のフォルダへ移動", "前のフォルダを開きますか？\n{name}"
         self.folder_prompt_open = True
         try:
             answer = QMessageBox.question(
                 self,
-                f"{label}のフォルダへ移動",
-                f"{label}のフォルダを開きますか？\n{folder.name}",
+                tr(title),
+                tr(question, name=folder.name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -663,19 +1179,34 @@ class MainWindow(QMainWindow):
 
     def video_error(self, _error: QMediaPlayer.Error, error_string: str) -> None:
         if error_string:
-            self.statusBar().showMessage(f"動画を再生できません: {error_string}", 8000)
+            self.statusBar().showMessage(tr("動画を再生できません: {error}", error=error_string), 8000)
 
     def toggle_video_playback(self) -> None:
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
-            self.statusBar().showMessage("一時停止", 1500)
+            self.statusBar().showMessage(tr("一時停止"), 1500)
         else:
             self.player.play()
-            self.statusBar().showMessage("再生", 1500)
+            self.statusBar().showMessage(tr("再生"), 1500)
+
+    def stop_video(self) -> None:
+        """Pause on the first frame rather than QMediaPlayer.stop().
+
+        stop() unloads the picture and leaves the view black, which looks like
+        a failed file rather than a stopped one.
+        """
+        self.player.pause()
+        self.seek_video(0)
+        self.statusBar().showMessage(tr("停止"), 1500)
+
+    def show_playback_state(self, _state: object = None) -> None:
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.play_action.setText(tr("❚❚ 一時停止") if playing else tr("▶ 再生"))
+        self.play_action.setToolTip(f"{tr('再生／一時停止')} ({tr('動画をクリック')})")
 
     def set_volume(self, value: int) -> None:
         self.audio.setVolume(value / 100)
-        self.volume_slider.setToolTip(f"音量: {value}")
+        self.volume_slider.setToolTip(f"{tr('音量')}: {value}")
         self.persist_settings()
 
     def change_volume(self, amount: int) -> None:
@@ -685,7 +1216,13 @@ class MainWindow(QMainWindow):
         self.player.setPosition(position)
         self.video_view.update_position(position)
 
+    def persist_settings_soon(self) -> None:
+        """Ask for a settings write once the user stops turning pages."""
+        if not self.initializing:
+            self.settings_timer.start()
+
     def persist_settings(self) -> None:
+        self.settings_timer.stop()
         if self.initializing:
             return
         values = self.filter_values()
@@ -700,9 +1237,15 @@ class MainWindow(QMainWindow):
             volume=self.volume_slider.value(),
             window_geometry=bytes(self.saveGeometry().toBase64()).decode("ascii"),
             reset_pan_on_change=self.reset_pan_action.isChecked(),
+            effect=self.current_effect(),
+            line_color=self.line_color,
             spread_view=self.spread_action.isChecked(),
             spread_rtl=self.spread_rtl_action.isChecked(),
+            spread_cover=self.spread_cover_action.isChecked(),
             spread_anchor=self.spread_anchor,
+            sort_key=self.sort_order.key,
+            sort_descending=self.sort_order.descending,
+            language=self.language_choice,
             favorites=list(self.favorites),
         )
         save_settings(self.settings)
@@ -725,6 +1268,7 @@ class MainWindow(QMainWindow):
             self.filter_panel.setVisible(False)
             self.filmstrip.setVisible(False)
             self.showFullScreen()
+        self.fullscreen_action.setChecked(self.isFullScreen())
 
     def toggle_filter_panel(self, visible: bool) -> None:
         if not self.isFullScreen():
@@ -757,6 +1301,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.persist_settings()
+        self.filmstrip.loader.close()
         self.stop_current()
         self.preloader.close()
         super().closeEvent(event)

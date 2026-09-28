@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QContextMenuEvent, QIcon, QPixmap, QWheelEvent
+from PySide6.QtGui import QContextMenuEvent, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QMenu,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+from local_media_viewer.i18n import tr
 from local_media_viewer.settings import Favorite
 
 THUMBNAIL_SIZE = QSize(64, 40)
@@ -36,10 +37,6 @@ ENTRY_STYLE = (
     "QToolButton { border: none; padding: 4px 14px 4px 8px; text-align: left; }"
     "QToolButton:hover { background: palette(highlight); color: palette(highlighted-text); }"
 )
-
-NO_GROUP_LABEL = "（フォルダなし）"
-NEW_GROUP_LABEL = "新しいフォルダ…"
-
 
 def encode_thumbnail(pixmap: QPixmap) -> str:
     """Shrink the displayed frame and store it as base64 PNG inside the settings."""
@@ -129,7 +126,7 @@ class FavoritesMenu(QMenu):
     move_requested = Signal(int, str)
     new_group_requested = Signal(int)
 
-    def __init__(self, title: str = "お気に入り") -> None:
+    def __init__(self, title: str = "") -> None:
         super().__init__(title)
         self.setStyleSheet(MENU_STYLE)
         self.root: FavoritesMenu | None = None
@@ -139,15 +136,11 @@ class FavoritesMenu(QMenu):
         self.group_menus: list[FavoritesMenu] = []
         self.groups: list[str] = []
 
-    def set_favorites(
-        self,
-        favorites: list[Favorite],
-        options: list[QAction] | None = None,
-    ) -> None:
+    def set_favorites(self, favorites: list[Favorite]) -> None:
         self.reset()
         self.groups = group_names(favorites)
         if not favorites:
-            empty = self.addAction("お気に入りはありません")
+            empty = self.addAction(tr("お気に入りはありません"))
             empty.setEnabled(False)
         else:
             loose = [
@@ -163,18 +156,6 @@ class FavoritesMenu(QMenu):
             if self.group_menus and loose:
                 self.addSeparator()
             self.add_entries(loose)
-        self.add_options(options or [])
-
-    def add_options(self, options: list[QAction]) -> None:
-        """Settings live under the favorites, separated by a rule.
-
-        The actions belong to the window, so clear() only unlinks them here
-        and the same objects stay shared with the right-click menu.
-        """
-        if not options:
-            return
-        self.addSeparator()
-        self.addActions(options)
 
     def add_group(self, name: str, members: list[tuple[int, Favorite]]) -> None:
         submenu = FavoritesMenu(f"{name} ({len(members)})")
@@ -227,7 +208,7 @@ class FavoritesMenu(QMenu):
         button.setIconSize(THUMBNAIL_SIZE)
         button.setIcon(QIcon(decode_thumbnail(favorite.thumbnail)))
         button.setText(favorite_label(favorite))
-        button.setToolTip(f"{favorite.path or favorite.folder}\n右クリックで解除・フォルダ分け")
+        button.setToolTip(f"{favorite.path or favorite.folder}\n{tr('右クリックで解除・フォルダ分け')}")
         button.setAutoRaise(True)
         button.setStyleSheet(ENTRY_STYLE)
         button.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
@@ -274,13 +255,13 @@ class FavoritesMenu(QMenu):
         if index < 0:
             return
         context = QMenu(self)
-        remove = context.addAction("お気に入りから解除")
-        move = context.addMenu("フォルダへ移動")
-        targets = {move.addAction(NO_GROUP_LABEL): ""}
+        remove = context.addAction(tr("お気に入りから解除"))
+        move = context.addMenu(tr("フォルダへ移動"))
+        targets = {move.addAction(tr("（フォルダなし）")): ""}
         for name in self.groups:
             targets[move.addAction(name)] = name
         move.addSeparator()
-        create = move.addAction(NEW_GROUP_LABEL)
+        create = move.addAction(tr("新しいフォルダ…"))
         chosen = context.exec(event.globalPos())
         context.deleteLater()
         if chosen is None:
