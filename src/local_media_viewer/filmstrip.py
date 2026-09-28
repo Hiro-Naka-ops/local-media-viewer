@@ -24,6 +24,9 @@ from local_media_viewer.media import VIDEO_EXTENSIONS
 THUMBNAIL_SIZE = QSize(88, 62)
 ITEM_SIZE = QSize(104, 88)
 GRID_SIZE = QSize(110, 94)
+# Thumbnails kept in view on each side of the current one, so the next and
+# previous few pages can be seen coming while paging through.
+LOOKAHEAD = 3
 
 FILMSTRIP_STYLE = """
 QListView {
@@ -243,10 +246,32 @@ class Filmstrip(QWidget):
         if 0 <= index < self.model.rowCount():
             model_index = self.model.index(index, 0)
             self.view.setCurrentIndex(model_index)
-            self.view.scrollTo(model_index, QListView.ScrollHint.EnsureVisible)
+            self.keep_in_view(model_index)
         else:
             self.view.clearSelection()
         self.schedule_visible_thumbnails()
+
+    def keep_in_view(self, model_index: QModelIndex) -> None:
+        """Scroll just enough to show LOOKAHEAD thumbnails either side of this one.
+
+        EnsureVisible stops as soon as the item itself is on screen, so paging
+        forward pinned the current thumbnail to the edge with nothing visible
+        past it. Scrolling only when the margin runs out, rather than always
+        centring, keeps the strip still while the current one moves inside it.
+        """
+        width = self.view.viewport().width()
+        rect = self.view.visualRect(model_index)
+        if width <= 0 or not rect.isValid():
+            self.view.scrollTo(model_index, QListView.ScrollHint.EnsureVisible)
+            return
+        margin = LOOKAHEAD * GRID_SIZE.width()
+        # Too narrow for the full margin: share what room there is equally.
+        margin = min(margin, max(0, (width - rect.width()) // 2))
+        bar = self.view.horizontalScrollBar()
+        if rect.left() - margin < 0:
+            bar.setValue(bar.value() + rect.left() - margin)
+        elif rect.right() + 1 + margin > width:
+            bar.setValue(bar.value() + rect.right() + 1 + margin - width)
 
     def schedule_visible_thumbnails(self) -> None:
         if self.model.rowCount():
