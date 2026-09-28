@@ -67,11 +67,16 @@ class ThumbnailLoader(QObject):
         # Bumped on every new folder so results from the previous one, which are
         # already in flight and cannot be cancelled mid-decode, are dropped.
         self.generation = 0
+        self.closed = False
 
     def reset(self) -> None:
         self.generation += 1
 
     def request(self, row: int, path: Path) -> None:
+        # A scroll or resize already queued when the window closed can still
+        # ask for thumbnails; the executor would raise, and nobody is looking.
+        if self.closed:
+            return
         self._executor.submit(self._work, self.generation, row, path)
 
     def _work(self, generation: int, row: int, path: Path) -> None:
@@ -86,6 +91,7 @@ class ThumbnailLoader(QObject):
             self.ready.emit(row, image)
 
     def close(self) -> None:
+        self.closed = True
         self.generation += 1
         self._executor.shutdown(wait=False, cancel_futures=True)
 

@@ -487,8 +487,10 @@ def test_a_long_menu_still_opens_under_the_label(tmp_path: Path, monkeypatch) ->
         corner = open_favorites(window)
 
         menu = window.favorites_menu
-        # Qt would lift the popup over the menu bar to fit; it must stay under the title.
-        assert menu.pos() == corner
+        # Qt would lift the popup over the menu bar to fit; it must stay under the
+        # title. Only the height is ours: on a narrow screen Qt may still slide it
+        # sideways to keep its right edge on screen, which is fine.
+        assert menu.pos().y() == corner.y()
         assert menu.pos().y() + menu.height() <= available.bottom() + 1
         assert menu.height() < menu.buttons[0].sizeHint().height() * len(window.favorites)
         menu.close()

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from local_media_viewer.filmstrip import Filmstrip
+from local_media_viewer.filmstrip import Filmstrip, ThumbnailLoader
 
 
 def test_filmstrip_wheel_scrolls_horizontally() -> None:
@@ -20,3 +20,11 @@ def test_filmstrip_wheel_scrolls_horizontally() -> None:
     filmstrip.view.scroll_horizontal(60)
     assert bar.value() == 60
     filmstrip.close()
+
+
+def test_a_closed_loader_ignores_late_requests(tmp_path: Path) -> None:
+    loader = ThumbnailLoader(workers=1)
+    loader.close()
+    # A queued scroll can still ask after the window has closed; that must be a
+    # quiet no-op rather than "cannot schedule new futures after shutdown".
+    loader.request(0, tmp_path / "late.png")
