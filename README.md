@@ -227,6 +227,17 @@ python -m local_media_viewer
 
 ## ビルドとリリース
 
+### GitHub への push
+
+Git Bash でリポジトリのフォルダを開き、`./push.sh` を実行します。テスト → コミット → push をまとめて行います。
+
+- コミットメッセージは変更したファイルから自動で作ります（例:「フィルムストリップ・テストを更新」＋変更ファイルの一覧）。
+  表示された内容で良ければ Enter、1行目を変えたいときは入力してから Enter
+- `./push.sh "メッセージ"` のように引数で指定することもできます
+- テストが1つでも失敗したら、コミットも push もせずに止まります
+
+### Windows 版・Mac 版のビルド
+
 Windows 版と Mac 版は GitHub Actions でまとめてビルドします。手元でビルドしてアップロードする必要はありません。
 
 1. GitHub のリポジトリページで **Actions** → **Build and release** → **Run workflow** を押す
