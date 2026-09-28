@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================
-# push.sh  —  テスト → コミット → GitHub へ push
+# deploy.sh  —  テスト → コミット → GitHub へ push
 # 使い方（Git Bash）:
-#   ./push.sh                        # 変更内容からコミットメッセージを自動で作る
-#   ./push.sh "フィルムストリップを修正"  # メッセージを引数で指定
+#   ./deploy.sh                        # 変更内容からコミットメッセージを自動で作る
+#   ./deploy.sh "フィルムストリップを修正"  # メッセージを引数で指定
 #
 # 自動のメッセージは表示して確認を求める。Enter でそのまま使い、
 # 文字を入力するとその1行目と置き換える（変更ファイルの一覧は残る）。
@@ -55,7 +55,7 @@ area_name() {
         src/*)                                echo "アプリ本体" ;;
         tests/*)                              echo "テスト" ;;
         .github/*|scripts/*|*.spec)           echo "ビルド設定" ;;
-        push.sh)                              echo "push スクリプト" ;;
+        deploy.sh)                            echo "deploy スクリプト" ;;
         assets/*)                             echo "画像素材" ;;
         pyproject.toml)                       echo "依存関係" ;;
         *.md)                                 echo "ドキュメント" ;;
