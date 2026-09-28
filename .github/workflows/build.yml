@@ -1,0 +1,138 @@
+name: Build and release
+
+# Run by hand from the Actions tab ("Run workflow"). Every run builds the
+# Windows EXE and the Mac apps and keeps them as run artifacts; only a run with
+# "release" ticked also publishes them as a GitHub Release, so trying a build
+# out never creates a release by accident.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "GitHub Releases に公開する"
+        type: boolean
+        default: false
+      version:
+        description: "リリースするバージョン（例: v1.2.0）。公開しないときは空欄でよい"
+        type: string
+        default: ""
+
+env:
+  PYTHON_VERSION: "3.13"
+  # Keep in step with pyproject.toml and scripts/build_mac.sh.
+  REQUIREMENTS: Pillow==12.1.1 pillow-heif==1.8.0 PySide6==6.10.2
+
+jobs:
+  check:
+    # Fails in seconds, before any build minutes are spent, when a release is
+    # asked for with a missing, malformed or already used version.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the release version
+        if: inputs.release
+        env:
+          VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::バージョンは v1.2.0 の形で入力してください（入力: '$VERSION'）"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags "$REPOSITORY" "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::$VERSION はすでにタグがあります。新しいバージョンを指定してください"
+            exit 1
+          fi
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        shell: bash  # word-splits $REQUIREMENTS into one argument per package
+        run: python -m pip install $REQUIREMENTS pytest==9.0.2 pyinstaller==6.19.0
+
+      - name: Test
+        # Windows is the main platform, so a failure here stops the release.
+        # The timeline test follows the real mouse cursor and is known to flake.
+        run: >
+          python -m pytest -q
+          --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
+
+      - name: Build
+        run: >
+          python -m PyInstaller --noconfirm --clean --onefile --windowed
+          --name Local-Media-Viewer --icon assets/icon.ico --paths src
+          --exclude-module numpy run_viewer.pyw
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Local-Media-Viewer-Windows
+          path: dist/Local-Media-Viewer.exe
+
+  mac:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15        # Apple silicon (M1 and later)
+            arch: arm64
+          - runner: macos-15-intel  # Intel Macs
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Test
+        # Reported, not blocking: a headless Mac runner has no real screen or
+        # window frames, which a few window-placement tests depend on.
+        continue-on-error: true
+        run: |
+          python -m pip install $REQUIREMENTS pytest==9.0.2
+          QT_QPA_PLATFORM=offscreen python -m pytest -q \
+            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
+
+      - name: Build
+        run: sh scripts/build_mac.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Local-Media-Viewer-macOS-${{ matrix.arch }}
+          path: dist/Local-Media-Viewer-macOS-${{ matrix.arch }}.zip
+          # Already a zip; storing it as-is avoids a pointless second compression.
+          compression-level: 0
+
+  release:
+    # Only when asked for, and only when every build succeeded: a release
+    # missing one of its downloads is worse than no release.
+    if: inputs.release
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to create the tag and the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          ls -l assets
+          gh release create "$VERSION" assets/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "$VERSION" \
+            --generate-notes

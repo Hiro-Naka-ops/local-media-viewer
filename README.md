@@ -224,7 +224,25 @@ python -m local_media_viewer
 前回の続きから起動したときは、そのフォルダを閉じたときの見開きの組み方をそのまま復元します。
 終了時のウィンドウ位置とサイズも保存し、次回起動時に復元します。起動引数で画像ファイルが渡された場合は、その画像を前回表示ファイルより優先して開きます。レジストリ操作やファイル関連付けの登録機能は提供しません。
 
-## Windows EXEの作成
+## ビルドとリリース
+
+Windows 版と Mac 版は GitHub Actions でまとめてビルドします。手元でビルドしてアップロードする必要はありません。
+
+1. GitHub のリポジトリページで **Actions** → **Build and release** → **Run workflow** を押す
+2. 必要に応じて入力して、緑の **Run workflow** を押す
+   - **GitHub Releases に公開する**: チェックしたときだけリリースを作ります。
+     チェックしなければビルドだけ行い、成果物は実行結果の **Artifacts** からダウンロードできます（試しに作るとき）
+   - **リリースするバージョン**: `v1.2.0` の形で入力（公開するときは必須。既存のタグと同じものは使えません）
+3. 完了すると（15分ほど）、リリースには次の3つが添付されます。
+   変更点の一覧は前回のリリースからのコミットをもとに自動で作られます
+   - `Local-Media-Viewer.exe`: Windows 版（単体EXE）
+   - `Local-Media-Viewer-macOS-arm64.zip`: Mac 版（Apple シリコン）
+   - `Local-Media-Viewer-macOS-x86_64.zip`: Mac 版（Intel）
+
+公開するときは、バージョンの形式と重複を最初に確かめ、Windows 版のテストがすべて通り、
+3つのビルドがすべて成功したときだけリリースを作ります。1つでも失敗したらリリースは作りません。
+
+### 手元で Windows EXE を作る場合
 
 ```cmd
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Local-Media-Viewer" --icon "assets/icon.ico" --paths "src" --exclude-module "numpy" "run_viewer.pyw"
@@ -232,20 +250,19 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Local-Med
 
 アイコンは `assets/icon.ico`（16〜256pxを内包）で、元データは `assets/icon.svg` です。
 
-`dist` には単体EXEが生成されます。EXEはGitへコミットせず、GitHub Releasesへ添付します。
+`dist` には単体EXEが生成されます。EXEはGitへコミットしません（配布は上の GitHub Actions で行います）。
 ビルドではアプリが使用しないNumPyを除外し、単体EXEの容量を抑えます。Qtと動画再生部品は機能上必要なため同梱します。
 
 ## Mac版（.app）の作成
 
-Mac 用のアプリは Mac 上でしかビルドできないため、GitHub Actions の macOS 環境でビルドします（手元に Mac がなくても作れます）。
+Mac 用のアプリは Mac 上でしかビルドできないため、上の「ビルドとリリース」で GitHub Actions の macOS 環境を使って作ります（手元に Mac がなくても作れます）。
 
-1. GitHub のリポジトリページで **Actions** → **Build macOS app** → **Run workflow** を押す
-2. 数分で完了したら、実行結果の **Artifacts** から自分の Mac に合うものをダウンロードする
-   - `Local-Media-Viewer-macOS-arm64`: Apple シリコン（M1 以降）
-   - `Local-Media-Viewer-macOS-x86_64`: Intel Mac
+1. リリースのページ（または Artifacts）から自分の Mac に合うものをダウンロードする
+   - `arm64`: Apple シリコン（M1 以降）
+   - `x86_64`: Intel Mac
    - どちらか分からないときは、Apple メニュー →「この Mac について」の「チップ」を確認します
-3. ダウンロードした zip の中にもう1つ zip があるので、それも展開すると `Local Media Viewer.app` が出てきます。
-   「アプリケーション」フォルダへ移します
+2. zip を展開すると `Local Media Viewer.app` が出てきます。「アプリケーション」フォルダへ移します
+   （Artifacts からダウンロードした場合は zip の中にもう1つ zip があるので、それも展開します）
 
 Mac が手元にあれば、`sh scripts/build_mac.sh` で同じものを `dist/` に作れます（Python 3.11〜3.13 が必要）。
 
