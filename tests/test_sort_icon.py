@@ -124,3 +124,65 @@ def test_a_restored_order_is_marked_from_the_start(tmp_path: Path, monkeypatch) 
         assert window.sort_icon_label.pixmap().toImage() == expected.toImage()
     finally:
         window.close()
+
+
+def test_clicking_the_icon_opens_the_sort_menu_above_it(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    for name in ("b.png", "a.png"):
+        Image.new("RGB", (8, 8), "red").save(tmp_path / name)
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.resize(700, 400)
+        window.show()
+        window.open_path(tmp_path / "a.png")
+        app.processEvents()
+        label = window.sort_icon_label
+        assert label.cursor().shape() == Qt.CursorShape.PointingHandCursor
+        assert "クリック" in label.toolTip()
+
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        menu = window.sort_menu
+        assert menu.isVisible()
+        # Opens upwards: the icon is on the bottom edge of the window.
+        top_of_icon = label.mapToGlobal(QPoint(0, 0)).y()
+        assert menu.geometry().bottom() <= top_of_icon
+
+        # The very menu 表示 holds: picking here changes the order and the icon.
+        window.sort_descending_action.trigger()
+        menu.close()
+        assert window.sort_order.descending
+        assert [path.name for path in window.files] == ["b.png", "a.png"]
+        assert "降順" in label.toolTip()
+    finally:
+        window.close()
+
+
+def test_a_click_dragged_off_the_icon_is_taken_back(monkeypatch) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.show()
+        app.processEvents()
+        clicks: list[bool] = []
+        window.sort_icon_label.clicked.connect(lambda: clicks.append(True))
+        outside = QPointF(QPoint(-20, -20))
+        window.sort_icon_label.mouseReleaseEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonRelease,
+                outside,
+                window.sort_icon_label.mapToGlobal(outside),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        assert clicks == []
+    finally:
+        window.close()

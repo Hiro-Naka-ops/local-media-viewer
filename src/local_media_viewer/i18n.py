@@ -272,6 +272,11 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "排序：{field}（{way}）",
         KOREAN: "정렬 순서: {field} ({way})",
     },
+    "クリックで並び順を変更": {
+        ENGLISH: "Click to change the sort order",
+        CHINESE: "单击以更改排序",
+        KOREAN: "클릭하여 정렬 순서 변경",
+    },
     "作成 {created}　更新 {modified}": {
         ENGLISH: "Created {created}   Modified {modified}",
         CHINESE: "创建 {created}　修改 {modified}",

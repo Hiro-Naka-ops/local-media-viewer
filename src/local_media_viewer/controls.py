@@ -1,10 +1,29 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QLineF, Qt
+from PySide6.QtCore import QLineF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
-from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
+from PySide6.QtWidgets import QLabel, QSlider, QStyle, QStyleOptionSlider
 
 from local_media_viewer.i18n import tr
+
+
+class ClickableLabel(QLabel):
+    """A label that reports a left click, and shows a hand to say it can."""
+
+    clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        # On release and only inside, like a button: pressing and then sliding
+        # off is how a click is taken back.
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 def snap_value(

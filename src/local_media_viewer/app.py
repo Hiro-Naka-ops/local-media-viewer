@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 )
 
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
-from local_media_viewer.controls import SnappingSlider
+from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
 from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail
 from local_media_viewer.filters import FilterValues, apply_filters
@@ -238,8 +238,9 @@ class MainWindow(QMainWindow):
         # left alone by showMessage, so the page count and the passing
         # notifications never overwrite the dates.
         # Added first, so it sits to the left of the dates it describes.
-        self.sort_icon_label = QLabel()
+        self.sort_icon_label = ClickableLabel()
         self.sort_icon_label.setStyleSheet("padding-right: 8px;")
+        self.sort_icon_label.clicked.connect(self.show_sort_popup)
         self.statusBar().addPermanentWidget(self.sort_icon_label)
         self.file_times_label = QLabel()
         self.file_times_label.setStyleSheet(f"color: {STATUS_HINT_COLOR}; padding-right: 6px;")
@@ -1023,7 +1024,22 @@ class MainWindow(QMainWindow):
         self.sort_icon_label.setPixmap(pixmap)
         field = tr(dict(SORT_LABELS).get(self.sort_order.key, ""))
         way = tr("降順" if self.sort_order.descending else "昇順")
-        self.sort_icon_label.setToolTip(tr("並び順: {field}（{way}）", field=field, way=way))
+        self.sort_icon_label.setToolTip(
+            f"{tr('並び順: {field}（{way}）', field=field, way=way)}\n{tr('クリックで並び順を変更')}"
+        )
+
+    def show_sort_popup(self) -> None:
+        """Drop the 並び順 menu from the status-bar icon, opening upwards.
+
+        The very menu the 表示 menu holds, so a choice made here is ticked
+        there too. The icon sits on the window's bottom edge, so the menu is
+        lifted to end at the icon's top and right-aligned to it, rather than
+        left for Qt to flip after finding no room below.
+        """
+        label = self.sort_icon_label
+        size = self.sort_menu.sizeHint()
+        corner = label.mapToGlobal(QPoint(label.width(), 0))
+        self.sort_menu.popup(QPoint(corner.x() - size.width(), corner.y() - size.height()))
 
     def show_file_times(self, path: Path) -> None:
         """Put the file's dates at the right-hand end of the status bar.
