@@ -47,7 +47,19 @@ def test_the_embedded_icon_matches_the_asset() -> None:
     assert ICON_SVG == asset.read_text(encoding="utf-8")
 
 
-def test_the_arms_of_the_m_meet_in_one_solid_joint() -> None:
+def icon_layout():
+    """scripts/make_icon.py, loaded for the geometry it lays the icon out by."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "make_icon.py"
+    spec = importlib.util.spec_from_file_location("make_icon", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def rendered_icon(size: int):
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
@@ -55,16 +67,48 @@ def test_the_arms_of_the_m_meet_in_one_solid_joint() -> None:
     from local_media_viewer.appicon import ICON_SVG
 
     QApplication.instance() or QApplication([])
-    image = QImage(256, 256, QImage.Format.Format_ARGB32)
+    image = QImage(size, size, QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    QSvgRenderer(ICON_SVG.encode("utf-8")).render(painter, QRectF(0, 0, 256, 256))
+    QSvgRenderer(ICON_SVG.encode("utf-8")).render(painter, QRectF(0, 0, size, size))
     painter.end()
+    return image
+
+
+def test_the_arms_of_the_m_meet_in_one_solid_joint() -> None:
+    layout = icon_layout()
+    image = rendered_icon(256)
+    # The mark is shifted left to make room for the mikan beside it.
+    centre = round(128 + layout.SHIFT_X)
     # Just above where the arms meet. The old icon drew two separate strokes
     # whose round ends barely touched, leaving the amber showing through here.
-    joint = image.pixelColor(128, 140)
+    joint = image.pixelColor(centre, 140)
     assert joint.green() > 200 and joint.blue() > 150, joint.name()
     # Either side of the centre, the halves keep their two tones.
-    assert image.pixelColor(122, 140).name() == "#ffffff"
-    assert image.pixelColor(134, 140).name() != "#ffffff"
+    assert image.pixelColor(centre - 6, 140).name() == "#ffffff"
+    assert image.pixelColor(centre + 6, 140).name() != "#ffffff"
+
+
+def test_the_mikan_stands_on_the_m_and_the_pair_is_centred() -> None:
+    layout = icon_layout()
+    size = 512
+    image = rendered_icon(size)
+    scale = size / 256
+
+    def white(x: int, y: int) -> bool:
+        colour = image.pixelColor(x, y)
+        return colour.red() > 250 and colour.green() > 250 and colour.blue() > 250
+
+    def lowest_white(x: float) -> int:
+        column = round(x * scale)
+        return max(y for y in range(size) if white(column, y))
+
+    left_leg = 128 - 78 * layout.M_SCALE + layout.SHIFT_X
+    mikan = layout.MIKAN_X + layout.SHIFT_X
+    # The fruit's bottom sits on the M's baseline, as the user asked.
+    assert abs(lowest_white(mikan) - lowest_white(left_leg)) <= 1
+
+    # The M and the fruit together sit in the middle of the tile.
+    columns = [x for x in range(size) if any(white(x, y) for y in range(0, size, 2))]
+    assert abs(columns[0] - (size - 1 - columns[-1])) <= 2
