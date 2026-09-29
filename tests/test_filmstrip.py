@@ -76,3 +76,22 @@ def test_a_narrow_strip_still_shows_the_current_thumbnail() -> None:
             assert fully_shown(filmstrip, row), row
     finally:
         filmstrip.close()
+
+
+def test_closing_a_strip_while_thumbnails_load_does_not_crash() -> None:
+    import gc
+
+    app = QApplication.instance() or QApplication([])
+    # Closing used to let the strip be destroyed with a worker still decoding,
+    # which killed the process within a few dozen rounds (a segmentation fault
+    # on the Mac CI, an access violation on Windows).
+    for _ in range(60):
+        filmstrip = Filmstrip()
+        filmstrip.resize(320, 112)
+        filmstrip.show()
+        filmstrip.set_files([Path(f"image-{index}.png") for index in range(400)])
+        filmstrip.request_visible_thumbnails()
+        filmstrip.close()
+        del filmstrip
+        gc.collect()
+        app.processEvents()

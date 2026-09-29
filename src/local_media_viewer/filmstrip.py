@@ -106,14 +106,22 @@ class ThumbnailLoader(QObject):
             image = read_thumbnail(path)
         except (OSError, ValueError):
             return
-        if generation == self.generation and not image.isNull():
+        if generation == self.generation and not self.closed and not image.isNull():
             # Queued across threads by Qt, so the icon lands on the UI thread.
             self.ready.emit(row, image)
 
     def close(self) -> None:
+        """Stop, waiting for any thumbnail already being decoded.
+
+        Not waiting let the loader be destroyed while a worker was still
+        inside it, which crashed the process (reproduced on Windows by closing
+        and collecting a strip straight after it asked for thumbnails; on the
+        Mac CI it killed the test run). The wait is at most one thumbnail per
+        worker, a few milliseconds.
+        """
         self.closed = True
         self.generation += 1
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 class FilmstripModel(QAbstractListModel):
