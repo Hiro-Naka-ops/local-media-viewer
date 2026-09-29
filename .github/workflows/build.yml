@@ -46,9 +46,9 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -59,9 +59,17 @@ jobs:
       - name: Test
         # Windows is the main platform, so a failure here stops the release.
         # The timeline test follows the real mouse cursor and is known to flake.
-        run: >
-          python -m pytest -q
-          --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
+        # -v -rf and the saved log feed the annotations step below.
+        shell: bash
+        run: |
+          set -o pipefail
+          python -X faulthandler -m pytest -v -rf \
+            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades \
+            2>&1 | tee pytest.log
+
+      - name: Name failing tests in the annotations
+        if: always()
+        run: python scripts/ci_annotate.py pytest.log windows
 
       - name: Build
         run: >
@@ -69,7 +77,7 @@ jobs:
           --name Local-Media-Viewer --icon assets/icon.ico --paths src
           --exclude-module numpy run_viewer.pyw
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Local-Media-Viewer-Windows
           path: dist/Local-Media-Viewer.exe
@@ -89,9 +97,9 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -100,14 +108,21 @@ jobs:
         # window frames, which a few window-placement tests depend on.
         continue-on-error: true
         run: |
+          set -o pipefail
           python -m pip install $REQUIREMENTS pytest==9.0.2
-          QT_QPA_PLATFORM=offscreen python -m pytest -q \
-            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
+          QT_QPA_PLATFORM=offscreen python -X faulthandler -m pytest -v -rf \
+            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades \
+            2>&1 | tee pytest.log
+
+      - name: Name failing tests in the annotations
+        # A job log needs signing in to download, even on a public repository;
+        # annotations show on the run page and through the public API.
+        run: python scripts/ci_annotate.py pytest.log "mac ${{ matrix.arch }}"
 
       - name: Build
         run: sh scripts/build_mac.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Local-Media-Viewer-macOS-${{ matrix.arch }}
           path: dist/Local-Media-Viewer-macOS-${{ matrix.arch }}.zip
@@ -124,7 +139,7 @@ jobs:
     permissions:
       contents: write  # to create the tag and the release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
