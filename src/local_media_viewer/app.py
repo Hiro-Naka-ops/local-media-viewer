@@ -83,10 +83,24 @@ from local_media_viewer.settings import (
     save_settings,
 )
 from local_media_viewer.spread import compose_spread, is_animated
-from local_media_viewer.viewer import ImageView, VideoView
+from local_media_viewer.viewer import (
+    FIT_HEIGHT,
+    FIT_WIDTH,
+    FIT_WINDOW,
+    ImageView,
+    VideoView,
+)
 
 
 STATUS_HINT_COLOR = "#98A2B3"
+# The 表示サイズ entries: the three fits, then actual size. Labels are i18n keys.
+ACTUAL_SIZE = "actual"
+SIZE_LABELS = [
+    (FIT_WINDOW, "ウィンドウに合わせる"),
+    (FIT_WIDTH, "横幅に合わせる"),
+    (FIT_HEIGHT, "縦幅に合わせる"),
+    (ACTUAL_SIZE, "原寸で表示"),
+]
 # Filter slider ranges; gamma is in hundredths (70 = 0.70).
 BRIGHTNESS_RANGE = (-30, 30)
 CONTRAST_RANGE = (-30, 30)
@@ -165,6 +179,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.image_view = ImageView()
+        self.image_view.fit_kind = self.settings.fit_kind
         self.video_view = VideoView()
         self.image_view.navigate.connect(self.navigate)
         self.video_view.navigate.connect(self.navigate)
@@ -260,6 +275,8 @@ class MainWindow(QMainWindow):
         self.previous_action.triggered.connect(lambda: self.navigate(-1))
         self.next_action.triggered.connect(lambda: self.navigate(1))
         self.fit_action.triggered.connect(self.image_view.toggle_fit)
+        self.create_page_actions()
+        self.size_menu = self.create_size_menu()
         # Only offered from the right-click menu, which is the one menu left
         # in full screen. Enter itself is handled by the shortcuts below: giving
         # this action the same keys would make them ambiguous and fire neither.
@@ -298,6 +315,22 @@ class MainWindow(QMainWindow):
         self.quit_action = QAction(self)
         self.quit_action.triggered.connect(self.close)
         self.create_menu_bar()
+        # Full screen hides the menu bar and the toolbar, and an action's key
+        # only fires while a widget holding it is visible, so the arrows and
+        # Space did nothing in full screen. Held by the window as well, the
+        # keys work whichever bars are showing.
+        self.addActions(
+            [
+                self.previous_action,
+                self.next_action,
+                self.first_page_action,
+                self.last_page_action,
+                self.go_to_page_action,
+                self.fit_action,
+                self.open_file_action,
+                self.open_folder_action,
+            ]
+        )
         # Everything else lives in the menu bar; the toolbar keeps only what is
         # pressed over and over while reading. The video controls sit at the
         # far end, where appearing and vanishing shifts nothing else.
@@ -468,6 +501,13 @@ class MainWindow(QMainWindow):
         self.next_action.setToolTip(f"{tr('次へ')} (→ / ↓)")
         self.fit_action.setText(tr("フィット／原寸"))
         self.fit_action.setToolTip(f"{tr('フィット／原寸')} (Space)")
+        self.size_menu.setTitle(tr("表示サイズ"))
+        for key, label in SIZE_LABELS:
+            self.size_actions[key].setText(tr(label))
+        self.go_menu.setTitle(tr("移動(&G)"))
+        self.first_page_action.setText(tr("最初のページ"))
+        self.last_page_action.setText(tr("最後のページ"))
+        self.go_to_page_action.setText(tr("ページを指定…"))
         self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
         self.filmstrip_action.setText(tr("フィルムストリップ"))
         self.reset_pan_action.setText(tr("パン位置を毎回初期化する"))
@@ -949,8 +989,83 @@ class MainWindow(QMainWindow):
                         nearby.append(path)
         self.preloader.preload(nearby, self.plain_view())
 
+    def create_page_actions(self) -> None:
+        """Home / End and the page-number jump, beside the arrow-key paging."""
+        self.first_page_action = QAction(self)
+        self.first_page_action.setShortcut(QKeySequence(Qt.Key.Key_Home))
+        self.first_page_action.triggered.connect(lambda: self.go_to_index(0))
+        self.last_page_action = QAction(self)
+        self.last_page_action.setShortcut(QKeySequence(Qt.Key.Key_End))
+        self.last_page_action.triggered.connect(lambda: self.go_to_index(len(self.files) - 1))
+        self.go_to_page_action = QAction(self)
+        self.go_to_page_action.setShortcut(QKeySequence("Ctrl+G"))
+        self.go_to_page_action.triggered.connect(self.ask_page_number)
+        for action in (self.first_page_action, self.last_page_action, self.go_to_page_action):
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+
+    def go_to_index(self, index: int) -> None:
+        # show_current settles a spread onto the pair holding this page.
+        if 0 <= index < len(self.files) and index != self.index:
+            self.index = index
+            self.show_current()
+
+    def ask_page_number(self) -> None:
+        if not self.files:
+            return
+        number, accepted = QInputDialog.getInt(
+            self,
+            tr("ページを指定"),
+            tr("ページ番号（1〜{count}）:", count=len(self.files)),
+            self.index + 1,
+            1,
+            len(self.files),
+        )
+        if accepted:
+            self.go_to_index(number - 1)
+
+    def create_size_menu(self) -> QMenu:
+        """表示サイズ: which fit Space returns to, or actual size."""
+        menu = QMenu(self)
+        self.size_actions: dict[str, QAction] = {}
+        self.size_choices = QActionGroup(self)
+        # Optional: after a Ctrl+wheel zoom none of the four describes the view.
+        self.size_choices.setExclusionPolicy(
+            QActionGroup.ExclusionPolicy.ExclusiveOptional
+        )
+        for key in (FIT_WINDOW, FIT_WIDTH, FIT_HEIGHT, ACTUAL_SIZE):
+            action = QAction(self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, name=key: self.choose_size(name))
+            self.size_choices.addAction(action)
+            menu.addAction(action)
+            self.size_actions[key] = action
+        menu.addSeparator()
+        menu.addAction(self.fit_action)
+        menu.aboutToShow.connect(self.show_size_state)
+        return menu
+
+    def choose_size(self, name: str) -> None:
+        if name == ACTUAL_SIZE:
+            self.image_view.original_size()
+        else:
+            self.image_view.set_fit_kind(name)
+            self.persist_settings()
+        self.show_size_state()
+
+    def show_size_state(self) -> None:
+        """Tick the entry describing the view as it is, which Space may have changed."""
+        view = self.image_view
+        if view.fit_mode:
+            current = view.fit_kind
+        elif view.display_scale == 1.0:
+            current = ACTUAL_SIZE
+        else:
+            current = None
+        for key, action in self.size_actions.items():
+            action.setChecked(key == current)
+
     def create_menu_bar(self) -> None:
-        """ファイル / 表示 / 見開き / お気に入り, in the usual Windows order.
+        """ファイル / 表示 / 移動 / 見開き / お気に入り / ウィンドウ, as Windows apps order them.
 
         The actions belong to the window, so the right-click menu shows the
         very same ones and their ticks stay in step without any syncing.
@@ -963,7 +1078,7 @@ class MainWindow(QMainWindow):
 
         panels, drawing, spread = self.option_groups
         self.view_menu = bar.addMenu("")
-        self.view_menu.addAction(self.fit_action)
+        self.view_menu.addMenu(self.size_menu)
         for group in (panels, drawing):
             self.view_menu.addSeparator()
             self.view_menu.addActions(group)
@@ -971,6 +1086,13 @@ class MainWindow(QMainWindow):
         # has no place in the right-click menu.
         self.view_menu.addSeparator()
         self.view_menu.addMenu(self.language_menu)
+
+        self.go_menu = bar.addMenu("")
+        self.go_menu.addActions([self.previous_action, self.next_action])
+        self.go_menu.addSeparator()
+        self.go_menu.addActions([self.first_page_action, self.last_page_action])
+        self.go_menu.addSeparator()
+        self.go_menu.addAction(self.go_to_page_action)
 
         self.spread_menu = bar.addMenu("")
         self.spread_menu.addActions(spread)
@@ -1132,7 +1254,8 @@ class MainWindow(QMainWindow):
         # The toolbar is gone in full screen, so this menu has to carry the way
         # back out as well as fitting, which is otherwise only on the toolbar.
         self.fullscreen_action.setChecked(self.isFullScreen())
-        menu.addActions([self.fit_action, self.fullscreen_action])
+        self.show_size_state()
+        menu.addActions([self.size_menu.menuAction(), self.fullscreen_action])
         if self.stack.currentWidget() is self.video_view:
             # The toolbar is hidden in full screen, so playback is offered here too.
             menu.addSeparator()
@@ -1387,6 +1510,7 @@ class MainWindow(QMainWindow):
             sort_descending=self.sort_order.descending,
             language=self.language_choice,
             always_on_top=self.always_on_top_action.isChecked(),
+            fit_kind=self.image_view.fit_kind,
             favorites=list(self.favorites),
         )
         save_settings(self.settings)

@@ -252,15 +252,21 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
     try:
         titles = [action.text() for action in window.menuBar().actions()]
         assert titles == [
-            "ファイル(&F)", "表示(&V)", "見開き(&S)", "お気に入り(&A)", "ウィンドウ(&W)"
+            "ファイル(&F)",
+            "表示(&V)",
+            "移動(&G)",
+            "見開き(&S)",
+            "お気に入り(&A)",
+            "ウィンドウ(&W)",
         ]
 
         panels, drawing, spread = window.option_groups
         view = sections(window.view_menu)
-        # Zoom, the panels, how the picture is drawn, and the language closing
-        # the menu, each ruled off from the next. Full screen is a window matter.
+        # Display size, the panels, how the picture is drawn, and the language
+        # closing the menu, each ruled off from the next. Full screen is a
+        # window matter.
         assert view == [
-            [window.fit_action],
+            [window.size_menu.menuAction()],
             panels,
             drawing,
             [window.language_menu.menuAction()],

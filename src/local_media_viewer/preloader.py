@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
-from PIL import Image
-from PySide6.QtGui import QImage
+from PIL import Image, ImageOps
+from PySide6.QtGui import QImage, QImageReader
 
 from local_media_viewer import heic  # noqa: F401  (registers the HEIC decoder)
 
@@ -34,14 +34,25 @@ def load_image(path: Path) -> Image.Image:
     image = Image.open(path)
     image.seek(0)
     image.load()
-    return image
+    if int(getattr(image, "n_frames", 1)) > 1:
+        # An animation keeps its handle so later frames can be seeked to;
+        # exif_transpose would hand back a single, detached frame.
+        return image
+    # Phones store a portrait photo as a landscape bitmap plus an orientation
+    # tag; without honouring the tag the photo comes out on its side.
+    upright = ImageOps.exif_transpose(image)
+    if upright is not image:
+        image.close()
+    return upright
 
 
 def load_qimage(path: Path) -> QImage:
     """Decode with Qt. Safe off the UI thread; QPixmap would not be."""
-    image = QImage()
-    image.load(str(path))
-    return image
+    reader = QImageReader(str(path))
+    # QImage.load ignores the orientation tag; the reader applies it when
+    # asked, matching the Pillow route and the filmstrip thumbnails.
+    reader.setAutoTransform(True)
+    return reader.read()
 
 
 def is_animated_file(path: Path) -> bool:

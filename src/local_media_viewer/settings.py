@@ -42,6 +42,8 @@ class ViewerSettings:
     # "" follows the Windows display language; otherwise an i18n language code.
     language: str = ""
     always_on_top: bool = False
+    # "window", "width" or "height": what Space and a click fit the picture to.
+    fit_kind: str = "window"
     favorites: list[Favorite] = field(default_factory=list)
 
 

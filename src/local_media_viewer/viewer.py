@@ -46,6 +46,21 @@ PAGE_BUTTONS = {
 }
 
 
+# How a picture is fitted to the view. The keys are stored in the settings.
+FIT_WINDOW = "window"
+FIT_WIDTH = "width"
+FIT_HEIGHT = "height"
+FIT_KINDS = (FIT_WINDOW, FIT_WIDTH, FIT_HEIGHT)
+# The fitted side is pinned to its start rather than centred. When the fit
+# overflows the other side, QGraphicsView centres using a scroll bar width that
+# differs from the one the Windows 11 style draws, which left the picture a few
+# pixels off the edge; pinned, it lands exactly. The other side still centres.
+FIT_ALIGNMENT = {
+    FIT_WINDOW: Qt.AlignmentFlag.AlignCenter,
+    FIT_WIDTH: Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    FIT_HEIGHT: Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+}
+
 # How far fingers travel on a trackpad before a swipe counts as a page turn.
 SWIPE_DISTANCE = 40
 
@@ -240,6 +255,8 @@ class ImageView(QGraphicsView):
         self.item = QGraphicsPixmapItem()
         self.scene().addItem(self.item)
         self.fit_mode = True
+        # Which fit Space and a click return to from actual size.
+        self.fit_kind = FIT_WINDOW
         self.display_scale = 1.0
         self.source_pixmap = QPixmap()
         self.scaled_cache: OrderedDict[tuple[int, int, int], tuple[QPixmap, int]] = (
@@ -271,17 +288,44 @@ class ImageView(QGraphicsView):
         self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
 
     def fit_to_window(self) -> None:
+        """Scale the picture by the current fit kind."""
         self.fit_mode = True
+        self.setAlignment(FIT_ALIGNMENT[self.fit_kind])
         if not self.source_pixmap.isNull():
-            viewport = self.viewport().size()
-            scale = min(
-                viewport.width() / self.source_pixmap.width(),
-                viewport.height() / self.source_pixmap.height(),
-            )
-            self.render_at_scale(max(0.01, scale))
+            self.render_at_scale(max(0.01, self.fit_scale()))
+
+    def set_fit_kind(self, kind: str) -> None:
+        self.fit_kind = kind if kind in FIT_KINDS else FIT_WINDOW
+        self.fit_to_window()
+
+    def fit_scale(self) -> float:
+        """The scale that fits the picture to the view by the current fit kind.
+
+        Measured against the view without scroll bars. Fitting the width of a
+        tall picture overflows the height, which brings in a vertical bar that
+        takes its width from the view: fitted to the full width, the picture
+        would then be a bar's width too wide and gain a horizontal bar as well.
+        So the overflowing fits leave room for the bar they cause.
+        """
+        room = self.maximumViewportSize()
+        width = self.source_pixmap.width()
+        height = self.source_pixmap.height()
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        if self.fit_kind == FIT_WIDTH:
+            scale = room.width() / width
+            if height * scale > room.height():
+                scale = (room.width() - bar) / width
+            return scale
+        if self.fit_kind == FIT_HEIGHT:
+            scale = room.height() / height
+            if width * scale > room.width():
+                scale = (room.height() - bar) / height
+            return scale
+        return min(room.width() / width, room.height() / height)
 
     def original_size(self) -> None:
         self.fit_mode = False
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.render_at_scale(1.0)
 
     def render_at_scale(self, scale: float) -> None:
@@ -340,6 +384,7 @@ class ImageView(QGraphicsView):
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.fit_mode = False
+            self.setAlignment(Qt.AlignmentFlag.AlignCenter)
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             target = self.display_scale * factor
             if 0.1 <= target <= 8:

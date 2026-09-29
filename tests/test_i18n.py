@@ -162,7 +162,7 @@ def test_right_click_menu_carries_fit_and_full_screen_but_not_language(
         window.show_media_menu(window.pos())
         actions = shown[-1]
         texts = [a.text() for a in actions if not a.isSeparator()]
-        assert texts[:3] == ["お気に入りに登録", "フィット／原寸", "全画面表示	Enter"]
+        assert texts[:3] == ["お気に入りに登録", "表示サイズ", "全画面表示	Enter"]
         assert window.language_menu.menuAction() not in actions
         for group in window.option_groups:
             assert all(action in actions for action in group)
