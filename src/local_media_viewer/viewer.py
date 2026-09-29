@@ -341,15 +341,19 @@ class ImageView(QGraphicsView):
         room = self.maximumViewportSize()
         width = self.source_pixmap.width()
         height = self.source_pixmap.height()
-        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        # The bars' own size hints, which is what the scroll area lays them out
+        # at. The style's general PM_ScrollBarExtent matches on Windows but is
+        # 4 px short of the real bar on macOS, which left the picture 4 px too
+        # wide and brought in a horizontal bar as well.
         if self.fit_kind == FIT_WIDTH:
             scale = room.width() / width
             if height * scale > room.height():
-                scale = (room.width() - bar) / width
+                scale = (room.width() - self.verticalScrollBar().sizeHint().width()) / width
             return scale
         if self.fit_kind == FIT_HEIGHT:
             scale = room.height() / height
             if width * scale > room.width():
+                bar = self.horizontalScrollBar().sizeHint().height()
                 scale = (room.height() - bar) / height
             return scale
         return min(room.width() / width, room.height() / height)
