@@ -61,6 +61,15 @@ FIT_ALIGNMENT = {
     FIT_HEIGHT: Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
 }
 
+# Where 毎回先頭に戻す puts a new page: horizontally centred, at the top.
+PAN_TOP_CENTRE = (0.5, 0.0)
+
+
+def scroll_fraction(bar) -> float | None:
+    span = bar.maximum() - bar.minimum()
+    return (bar.value() - bar.minimum()) / span if span > 0 else None
+
+
 # How far fingers travel on a trackpad before a swipe counts as a page turn.
 SWIPE_DISTANCE = 40
 
@@ -271,21 +280,43 @@ class ImageView(QGraphicsView):
         self._left_press_position = None
         self._left_dragged = False
 
-    def set_pixmap(self, pixmap: QPixmap, reset_pan: bool = False) -> None:
+    def set_pixmap(self, pixmap: QPixmap, pan: tuple[float, float] | None = None) -> None:
+        """Show a picture, then move to a pan position if one is given.
+
+        None leaves the scroll bars where the previous picture had them.
+        """
         self.source_pixmap = pixmap
         if self.fit_mode:
             self.fit_to_window()
         else:
             self.render_at_scale(self.display_scale)
-        if reset_pan:
-            self.reset_pan()
+        if pan is not None:
+            self.set_pan_fraction(*pan)
+
+    def pan_fraction(self) -> tuple[float | None, float | None]:
+        """How far along each scroll bar the view is, from 0 to 1.
+
+        A proportion rather than pixels, so a position carries over to pages of
+        another size or zoom: "the right edge, a third of the way down" means
+        the same on every page. None for a side that does not scroll.
+        """
+        return (
+            scroll_fraction(self.horizontalScrollBar()),
+            scroll_fraction(self.verticalScrollBar()),
+        )
+
+    def set_pan_fraction(self, horizontal: float, vertical: float) -> None:
+        for bar, fraction in (
+            (self.horizontalScrollBar(), horizontal),
+            (self.verticalScrollBar(), vertical),
+        ):
+            span = bar.maximum() - bar.minimum()
+            bar.setValue(bar.minimum() + round(span * min(1.0, max(0.0, fraction))))
 
     def reset_pan(self) -> None:
         """Start the next picture from its top, centred, instead of where
         the previous one was left scrolled to."""
-        horizontal = self.horizontalScrollBar()
-        horizontal.setValue((horizontal.minimum() + horizontal.maximum()) // 2)
-        self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
+        self.set_pan_fraction(*PAN_TOP_CENTRE)
 
     def fit_to_window(self) -> None:
         """Scale the picture by the current fit kind."""

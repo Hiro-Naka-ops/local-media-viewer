@@ -90,6 +90,32 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "页码（1–{count}）:",
         KOREAN: "페이지 번호（1–{count}）:",
     },
+    "パン位置": {ENGLISH: "Pan Position", CHINESE: "平移位置", KOREAN: "이동 위치"},
+    "毎回先頭に戻す": {
+        ENGLISH: "Start at the Top Every Time",
+        CHINESE: "每次回到顶部",
+        KOREAN: "매번 맨 위에서 시작",
+    },
+    "前のページの位置を引き継ぐ": {
+        ENGLISH: "Keep the Previous Page's Position",
+        CHINESE: "沿用上一页的位置",
+        KOREAN: "이전 페이지 위치 유지",
+    },
+    "固定した位置に合わせる": {
+        ENGLISH: "Go to the Fixed Position",
+        CHINESE: "移到固定的位置",
+        KOREAN: "고정한 위치로 이동",
+    },
+    "今の位置で固定する": {
+        ENGLISH: "Fix the Current Position",
+        CHINESE: "固定当前位置",
+        KOREAN: "현재 위치로 고정",
+    },
+    "この位置でパン位置を固定しました": {
+        ENGLISH: "Pan position fixed here",
+        CHINESE: "已将平移位置固定在此处",
+        KOREAN: "이 위치로 고정했습니다",
+    },
     "終了(&X)": {ENGLISH: "E&xit", CHINESE: "退出(&X)", KOREAN: "끝내기(&X)"},
     # Video controls (shown only while a video is open)
     "▶ 再生": {ENGLISH: "▶ Play", CHINESE: "▶ 播放", KOREAN: "▶ 재생"},
@@ -104,11 +130,6 @@ CATALOG: dict[str, dict[str, str]] = {
     },
     "ミュート": {ENGLISH: "Mute", CHINESE: "静音", KOREAN: "음소거"},
     # Options
-    "パン位置を毎回初期化する": {
-        ENGLISH: "Reset Pan Position on Every Page",
-        CHINESE: "每次翻页时重置平移位置",
-        KOREAN: "페이지마다 이동 위치 초기화",
-    },
     "見開き表示（2ページ）": {
         ENGLISH: "Two-Page Spread",
         CHINESE: "双页显示",

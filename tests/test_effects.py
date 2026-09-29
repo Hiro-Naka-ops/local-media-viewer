@@ -89,7 +89,7 @@ def test_the_effect_submenu_sits_with_the_drawing_options(tmp_path: Path, monkey
 
         group = window.option_groups[1]
         labels = [action.text() for action in group]
-        assert labels == ["エフェクト", "並び順", "パン位置を毎回初期化する"]
+        assert labels == ["エフェクト", "並び順", "パン位置"]
 
         # エフェクト is a folder: clicking it opens a submenu.
         effect_entry = next(a for a in group if a.text() == "エフェクト")

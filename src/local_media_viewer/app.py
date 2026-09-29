@@ -84,6 +84,7 @@ from local_media_viewer.settings import (
 )
 from local_media_viewer.spread import compose_spread, is_animated
 from local_media_viewer.viewer import (
+    PAN_TOP_CENTRE,
     FIT_HEIGHT,
     FIT_WIDTH,
     FIT_WINDOW,
@@ -100,6 +101,15 @@ SIZE_LABELS = [
     (FIT_WIDTH, "横幅に合わせる"),
     (FIT_HEIGHT, "縦幅に合わせる"),
     (ACTUAL_SIZE, "原寸で表示"),
+]
+# The パン位置 modes: where a new page opens. Labels are i18n keys.
+PAN_TOP = "top"
+PAN_KEEP = "keep"
+PAN_FIXED = "fixed"
+PAN_LABELS = [
+    (PAN_TOP, "毎回先頭に戻す"),
+    (PAN_KEEP, "前のページの位置を引き継ぐ"),
+    (PAN_FIXED, "固定した位置に合わせる"),
 ]
 # Filter slider ranges; gamma is in hundredths (70 = 0.70).
 BRIGHTNESS_RANGE = (-30, 30)
@@ -168,7 +178,9 @@ class MainWindow(QMainWindow):
         self.spread_second: Image.Image | None = None
         self.spread_anchor = max(0, self.settings.spread_anchor)
         self.displayed_pages: list[int] = []
-        self.pending_pan_reset = False
+        # Where the page being loaded should open, handed to set_pixmap.
+        self.pending_pan: tuple[float, float] | None = None
+        self.fixed_pan = (self.settings.pan_x, self.settings.pan_y)
         self.line_color = self.settings.line_color
         self.language_choice = self.settings.language
         self.apply_language(self.language_choice)
@@ -371,10 +383,7 @@ class MainWindow(QMainWindow):
     def create_option_actions(self) -> list[list[QAction]]:
         """Settings shared by the 表示設定 menu and the right-click menu."""
         # "Pan" is the user-facing name for the drag position of a zoomed image.
-        self.reset_pan_action = QAction(self)
-        self.reset_pan_action.setCheckable(True)
-        self.reset_pan_action.setChecked(self.settings.reset_pan_on_change)
-        self.reset_pan_action.toggled.connect(self.change_reset_pan)
+        self.pan_menu = self.create_pan_menu()
         self.spread_action = QAction(self)
         self.spread_action.setCheckable(True)
         self.spread_action.setChecked(self.settings.spread_view)
@@ -401,7 +410,7 @@ class MainWindow(QMainWindow):
             [
                 self.effect_menu.menuAction(),
                 self.sort_menu.menuAction(),
-                self.reset_pan_action,
+                self.pan_menu.menuAction(),
             ],
             [
                 self.spread_action,
@@ -510,7 +519,10 @@ class MainWindow(QMainWindow):
         self.go_to_page_action.setText(tr("ページを指定…"))
         self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
         self.filmstrip_action.setText(tr("フィルムストリップ"))
-        self.reset_pan_action.setText(tr("パン位置を毎回初期化する"))
+        self.pan_menu.setTitle(tr("パン位置"))
+        for key, label in PAN_LABELS:
+            self.pan_actions[key].setText(tr(label))
+        self.fix_pan_action.setText(tr("今の位置で固定する"))
         self.spread_action.setText(tr("見開き表示（2ページ）"))
         self.spread_rtl_action.setText(tr("見開きを右送りにする"))
         self.spread_cover_action.setText(tr("1ページ目を表紙として単独表示"))
@@ -628,8 +640,63 @@ class MainWindow(QMainWindow):
             # to re-render from: switching a filter or effect on reloads it.
             self.show_current()
 
-    def change_reset_pan(self, _enabled: bool) -> None:
+    def create_pan_menu(self) -> QMenu:
+        """パン位置: where each new page opens, and registering a fixed spot."""
+        menu = QMenu(self)
+        self.pan_actions: dict[str, QAction] = {}
+        self.pan_choices = QActionGroup(self)
+        self.pan_choices.setExclusive(True)
+        saved = self.settings.pan_mode
+        if saved not in (PAN_TOP, PAN_KEEP, PAN_FIXED):
+            # Settings from before the modes: the old checkbox picked one of two.
+            saved = PAN_TOP if self.settings.reset_pan_on_change else PAN_KEEP
+        for key, _label in PAN_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(key == saved)
+            action.triggered.connect(lambda _checked=False, name=key: self.choose_pan_mode(name))
+            self.pan_choices.addAction(action)
+            menu.addAction(action)
+            self.pan_actions[key] = action
+        menu.addSeparator()
+        self.fix_pan_action = QAction(self)
+        self.fix_pan_action.triggered.connect(self.fix_pan_here)
+        menu.addAction(self.fix_pan_action)
+        return menu
+
+    def pan_mode(self) -> str:
+        for key, action in self.pan_actions.items():
+            if action.isChecked():
+                return key
+        return PAN_TOP
+
+    def choose_pan_mode(self, name: str) -> None:
+        self.pan_actions[name].setChecked(True)
         self.persist_settings()
+
+    def fix_pan_here(self) -> None:
+        """Remember where the view is now as the spot every page opens at.
+
+        A side that cannot scroll at the moment - the width, when fitted to
+        it - keeps the proportion it had, so fixing the height of a page
+        fitted to width does not quietly reset the other side.
+        """
+        horizontal, vertical = self.image_view.pan_fraction()
+        old_x, old_y = self.fixed_pan
+        self.fixed_pan = (
+            old_x if horizontal is None else horizontal,
+            old_y if vertical is None else vertical,
+        )
+        self.choose_pan_mode(PAN_FIXED)
+        self.statusBar().showMessage(tr("この位置でパン位置を固定しました"), 3000)
+
+    def pan_for_new_page(self) -> tuple[float, float] | None:
+        mode = self.pan_mode()
+        if mode == PAN_FIXED:
+            return self.fixed_pan
+        if mode == PAN_TOP:
+            return PAN_TOP_CENTRE
+        return None
 
     def default_spread_anchor(self) -> int:
         """Where pairing starts in a folder that was just opened.
@@ -898,15 +965,13 @@ class MainWindow(QMainWindow):
                 plain = self.plain_view()
                 frame = self.preloader.take(path, plain) or load_frame(path, plain)
                 self.frame_index = 0
-                self.pending_pan_reset = self.reset_pan_action.isChecked()
+                self.pending_pan = self.pan_for_new_page()
                 if frame.qimage is not None:
                     # Nothing for Pillow to do, so the decoded bitmap goes
                     # straight to the view.
                     self.image = None
-                    self.image_view.set_pixmap(
-                        QPixmap.fromImage(frame.qimage), self.pending_pan_reset
-                    )
-                    self.pending_pan_reset = False
+                    self.image_view.set_pixmap(QPixmap.fromImage(frame.qimage), self.pending_pan)
+                    self.pending_pan = None
                 else:
                     self.image = frame.image
                     if len(pages) > 1:
@@ -1363,8 +1428,8 @@ class MainWindow(QMainWindow):
             duration = max(20, int(self.image.info.get("duration", 100)))
             if frame_count > 1:
                 self.cache_animation_frame(self.frame_index, pixmap, duration)
-        self.image_view.set_pixmap(pixmap, self.pending_pan_reset)
-        self.pending_pan_reset = False
+        self.image_view.set_pixmap(pixmap, self.pending_pan)
+        self.pending_pan = None
         if frame_count > 1:
             elapsed_ms = round((perf_counter() - started) * 1000)
             self.animation_timer.start(max(1, duration - elapsed_ms))
@@ -1499,7 +1564,11 @@ class MainWindow(QMainWindow):
             filmstrip_visible=self.filmstrip_action.isChecked(),
             volume=self.volume_slider.value(),
             window_geometry=bytes(self.saveGeometry().toBase64()).decode("ascii"),
-            reset_pan_on_change=self.reset_pan_action.isChecked(),
+            # Still written, so an older copy of the app reads a sensible choice.
+            reset_pan_on_change=self.pan_mode() == PAN_TOP,
+            pan_mode=self.pan_mode(),
+            pan_x=self.fixed_pan[0],
+            pan_y=self.fixed_pan[1],
             effect=self.current_effect(),
             line_color=self.line_color,
             spread_view=self.spread_action.isChecked(),

@@ -31,6 +31,12 @@ class ViewerSettings:
     volume: int = 50
     window_geometry: str = ""
     reset_pan_on_change: bool = True
+    # "top", "keep" or "fixed". Empty in files written before it existed,
+    # where reset_pan_on_change alone chose between top and keep.
+    pan_mode: str = ""
+    # The fixed pan position, as proportions of the scroll range (0 to 1).
+    pan_x: float = 0.5
+    pan_y: float = 0.0
     effect: str = "none"
     line_color: str = "#24478F"
     spread_view: bool = False

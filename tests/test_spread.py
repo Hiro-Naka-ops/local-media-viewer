@@ -222,12 +222,12 @@ def test_the_pan_reset_option_returns_to_the_top_of_the_next_page(
         bar = window.image_view.verticalScrollBar()
         assert bar.maximum() > 0
 
-        window.reset_pan_action.setChecked(False)
+        window.choose_pan_mode("keep")
         bar.setValue(bar.maximum())
         window.navigate(1)
         assert window.image_view.verticalScrollBar().value() == bar.maximum()
 
-        window.reset_pan_action.setChecked(True)
+        window.choose_pan_mode("top")
         bar = window.image_view.verticalScrollBar()
         bar.setValue(bar.maximum())
         window.navigate(1)
@@ -320,7 +320,7 @@ def test_options_survive_a_settings_round_trip(tmp_path: Path, monkeypatch) -> N
     window = app_module.MainWindow()
     try:
         window.open_path(folder / "1.png")
-        window.reset_pan_action.setChecked(True)
+        window.choose_pan_mode("top")
         window.spread_action.setChecked(True)
         window.spread_rtl_action.setChecked(False)
     finally:
@@ -328,6 +328,7 @@ def test_options_survive_a_settings_round_trip(tmp_path: Path, monkeypatch) -> N
 
     saved = stored[-1]
     assert saved.reset_pan_on_change is True
+    assert saved.pan_mode == "top"
     assert saved.spread_view is True
     assert saved.spread_rtl is False
     assert saved.spread_anchor == 1
@@ -335,7 +336,7 @@ def test_options_survive_a_settings_round_trip(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(app_module, "load_settings", lambda: saved)
     restored = app_module.MainWindow()
     try:
-        assert restored.reset_pan_action.isChecked() is True
+        assert restored.pan_mode() == "top"
         assert restored.spread_action.isChecked() is True
         assert restored.spread_rtl_action.isChecked() is False
         assert restored.spread_anchor == 1
@@ -471,7 +472,7 @@ def test_the_pan_reset_centres_on_the_new_image_not_the_previous_one(
         window.resize(400, 360)
         window.show()
         app.processEvents()
-        window.reset_pan_action.setChecked(True)
+        window.choose_pan_mode("top")
         window.open_path(folder / "0.png")
         window.image_view.original_size()
         app.processEvents()
@@ -505,7 +506,7 @@ def test_pan_is_left_alone_when_the_option_is_off(tmp_path: Path, monkeypatch) -
         window.resize(400, 360)
         window.show()
         app.processEvents()
-        window.reset_pan_action.setChecked(False)
+        window.choose_pan_mode("keep")
         window.open_path(folder / "0.png")
         window.image_view.original_size()
         app.processEvents()
