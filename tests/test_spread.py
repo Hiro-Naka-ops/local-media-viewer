@@ -279,10 +279,12 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
             "1ページ目を表紙として単独表示",
             "見開きページをずらす",
         ]
-        # What is left on the toolbar is only paging (the video controls are
-        # hidden until a video is open).
-        shown = [a for a in window.toolbar.actions() if a.isVisible()]
-        assert shown == [window.previous_action, window.next_action]
+        # What is left on the toolbar is paging and the per-picture clean-up
+        # (the video controls are hidden until a video is open).
+        shown = [
+            a for a in window.toolbar.actions() if a.isVisible() and not a.isSeparator()
+        ]
+        assert shown == [window.previous_action, window.next_action, window.enhance_action]
     finally:
         window.close()
 

@@ -40,8 +40,11 @@ ENTRY_STYLE = (
     "QToolButton:hover { background: palette(highlight); color: palette(highlighted-text); }"
 )
 
+# A muted grey × was hard to spot next to the thumbnails (user feedback), so
+# the button is red at rest and filled red under the pointer.
 REMOVE_STYLE = (
-    "QToolButton { border: none; padding: 4px 10px; color: palette(mid); font-weight: bold; }"
+    "QToolButton { border: none; padding: 2px 12px; color: #d03030;"
+    " font-size: 16px; font-weight: bold; }"
     "QToolButton:hover { background: #e04040; color: white; }"
 )
 
@@ -158,6 +161,17 @@ class FavoritesList(QScrollArea):
         self.rows.append(row)
         self.buttons.append(button)
 
+    def discard(self, button: QToolButton) -> None:
+        position = self.buttons.index(button)
+        shown = self.height() // self.row_height() if self.row_height() else 0
+        row = self.rows.pop(position)
+        self.buttons.pop(position)
+        self.column.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        if self.rows:
+            self.fit(min(shown, len(self.rows)))
+
     def row_height(self) -> int:
         return self.buttons[0].sizeHint().height() if self.buttons else 0
 
@@ -190,6 +204,7 @@ class FavoritesMenu(QMenu):
         super().__init__(title)
         self.setStyleSheet(MENU_STYLE)
         self.root: FavoritesMenu | None = None
+        self.group_name = ""
         self.buttons: list[QToolButton] = []
         self.remove_buttons: list[QToolButton] = []
         self.entry_index: dict[QToolButton, int] = {}
@@ -231,6 +246,7 @@ class FavoritesMenu(QMenu):
     def add_group(self, name: str, members: list[tuple[int, Favorite]]) -> None:
         submenu = FavoritesMenu(f"{name} ({len(members)})")
         submenu.root = self
+        submenu.group_name = name
         submenu.groups = self.groups
         submenu.add_entries(members)
         submenu.activated.connect(self.activated)
@@ -303,19 +319,21 @@ class FavoritesMenu(QMenu):
         button.setAutoRaise(True)
         button.setStyleSheet(ENTRY_STYLE)
         button.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
-        button.clicked.connect(lambda _checked=False: self.choose(index))
+        # Look the index up at click time: removing an entry while the menu
+        # stays open renumbers the ones after it (drop_entry()).
+        button.clicked.connect(lambda _checked=False: self.choose(self.entry_index[button]))
         return button
 
     def _make_row(self, button: QToolButton, index: int) -> tuple[QWidget, QToolButton]:
         """Pair an entry button with a visible remove button, side by side."""
         remove = QToolButton()
-        remove.setText("×")
+        remove.setText("✕")
         remove.setToolTip(tr("お気に入りから解除"))
         remove.setAutoRaise(True)
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
         remove.setStyleSheet(REMOVE_STYLE)
         remove.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        remove.clicked.connect(lambda _checked=False: self.remove(index))
+        remove.clicked.connect(lambda _checked=False: self.remove(self.entry_index[button]))
 
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -330,8 +348,36 @@ class FavoritesMenu(QMenu):
         self.report(lambda: self.activated.emit(index))
 
     def remove(self, index: int) -> None:
-        self.close_chain()
+        # The menu stays open so several entries can be removed in a row; the
+        # window answers with drop_entry() instead of rebuilding the menu.
         self.report(lambda: self.remove_requested.emit(index))
+
+    def drop_entry(self, index: int) -> None:
+        """Take one entry out of the open menu and renumber the rest.
+
+        Indices point into the window's whole favorites list, shared by the
+        root and every group submenu, so all of them shift past the removed one.
+        """
+        for button, number in list(self.entry_index.items()):
+            if number == index:
+                position = self.buttons.index(button)
+                self.buttons.pop(position)
+                self.remove_buttons.pop(position)
+                del self.entry_index[button]
+                self.entry_list.discard(button)
+            elif number > index:
+                self.entry_index[button] = number - 1
+        if self.entry_action is not None:
+            # Same re-measuring nudge as limit_to(); hidden once it is empty.
+            self.entry_action.setVisible(False)
+            self.entry_action.setVisible(bool(self.buttons))
+        for submenu in self.group_menus:
+            submenu.drop_entry(index)
+            count = len(submenu.buttons)
+            submenu.setTitle(f"{submenu.group_name} ({count})")
+            submenu.menuAction().setVisible(count > 0)
+        if self.isVisible():
+            self.adjustSize()
 
     def close_chain(self) -> None:
         self.close()
@@ -380,10 +426,11 @@ class FavoritesMenu(QMenu):
         context.deleteLater()
         if chosen is None:
             return
-        self.close_chain()
         if chosen is remove:
-            self.report(lambda: self.remove_requested.emit(index))
-        elif chosen is create:
+            self.remove(index)
+            return
+        self.close_chain()
+        if chosen is create:
             self.report(lambda: self.new_group_requested.emit(index))
         elif chosen in targets:
             group = targets[chosen]

@@ -43,6 +43,7 @@ area_name() {
         src/local_media_viewer/spread.py)     echo "見開き" ;;
         src/local_media_viewer/filters.py)    echo "フィルター" ;;
         src/local_media_viewer/effects.py)    echo "エフェクト" ;;
+        src/local_media_viewer/enhance.py)    echo "高画質化" ;;
         src/local_media_viewer/media.py)      echo "ファイル一覧・並び順" ;;
         src/local_media_viewer/sorticon.py)   echo "並び順アイコン" ;;
         src/local_media_viewer/preloader.py)  echo "先読み" ;;

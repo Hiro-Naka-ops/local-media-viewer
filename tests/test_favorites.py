@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, Qt
+from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QContextMenuEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -175,6 +175,52 @@ def test_clicking_the_remove_button_releases_that_entry(tmp_path: Path, monkeypa
 
         assert window.favorites == []
         assert window.favorites_menu.buttons == []
+    finally:
+        window.close()
+
+
+def test_removing_keeps_the_menu_open_and_renumbers_the_rest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folders = []
+    for name in ("a", "b", "c"):
+        folder = tmp_path / name
+        folder.mkdir()
+        save_image(folder / "1.png", "red")
+        folders.append(folder)
+
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.show()
+        for folder in folders:
+            window.open_path(folder / "1.png")
+            window.add_favorite()
+        menu = window.favorites_menu
+        menu.popup(QPoint(0, 0))
+        app.processEvents()
+
+        menu.remove_buttons[0].click()
+        app.processEvents()
+        assert menu.isVisible()
+        assert [f.name for f in window.favorites] == ["b", "c"]
+        assert [b.text() for b in menu.buttons] == ["b", "c"]
+
+        # The later entries were renumbered, so this removes "c", not a stale index.
+        menu.remove_buttons[1].click()
+        app.processEvents()
+        assert menu.isVisible()
+        assert [f.name for f in window.favorites] == ["b"]
+
+        menu.buttons[0].click()
+        app.processEvents()
+        assert window.current_folder == folders[1]
+
+        menu.close()
+        app.processEvents()
+        app.processEvents()
+        assert [b.text() for b in menu.buttons] == ["b"]
+        assert not window.favorites_stale
     finally:
         window.close()
 

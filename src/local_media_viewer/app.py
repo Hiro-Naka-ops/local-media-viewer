@@ -63,6 +63,7 @@ from local_media_viewer import i18n
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
+from local_media_viewer.enhance import Enhancer
 from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail, normalize_thumbnail
 from local_media_viewer.filmstrip import Filmstrip
 from local_media_viewer.filters import FilterValues, apply_filters
@@ -313,6 +314,14 @@ class MainWindow(QMainWindow):
         self.previous_action.triggered.connect(lambda: self.navigate(-1))
         self.next_action.triggered.connect(lambda: self.navigate(1))
         self.fit_action.triggered.connect(self.image_view.toggle_fit)
+        # Per page and never remembered: the clean-up takes a second or so, too
+        # slow to run on every page turned, so it is asked for picture by picture.
+        self.enhance_action = QAction(self)
+        self.enhance_action.setCheckable(True)
+        self.enhance_action.triggered.connect(self.toggle_enhance)
+        self.enhancer = Enhancer()
+        self.enhancer.ready.connect(self.show_enhanced)
+        self.enhance_generation = 0
         self.create_page_actions()
         self.size_menu = self.create_size_menu()
         # Only offered from the right-click menu, which is the one menu left
@@ -373,6 +382,8 @@ class MainWindow(QMainWindow):
         # pressed over and over while reading. The video controls sit at the
         # far end, where appearing and vanishing shifts nothing else.
         self.toolbar.addActions([self.previous_action, self.next_action])
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.enhance_action)
         # Hidden through the QActions addWidget/addSeparator hand back: a
         # toolbar re-shows a widget it holds whenever it lays itself out, so
         # hiding the QSlider itself does not stick.
@@ -536,6 +547,10 @@ class MainWindow(QMainWindow):
         self.next_action.setToolTip(f"{tr('次へ')} (→ / ↓)")
         self.fit_action.setText(tr("フィット／原寸"))
         self.fit_action.setToolTip(f"{tr('フィット／原寸')} (Space)")
+        self.enhance_action.setText(tr("高画質化"))
+        self.enhance_action.setToolTip(
+            tr("この画像のブロックノイズを消して解像度を上げる（表示のみ・元ファイルは変更しない）")
+        )
         self.size_menu.setTitle(tr("表示サイズ"))
         for key, label in SIZE_LABELS:
             self.size_actions[key].setText(tr(label))
@@ -969,6 +984,10 @@ class MainWindow(QMainWindow):
         pages = self.spread_pages()
         self.index = pages[0]
         path = self.files[self.index]
+        # A new page starts from the file as it is; the clean-up is per picture.
+        self.enhancer.cancel()
+        self.enhance_action.setChecked(False)
+        self.enhance_generation = 0
         self.filmstrip.set_files(self.files)
         self.filmstrip.set_current(self.index)
         self.stop_current()
@@ -1008,8 +1027,72 @@ class MainWindow(QMainWindow):
                     self.render_frame()
             except (OSError, ValueError) as error:
                 QMessageBox.warning(self, tr("画像を開けません"), f"{path.name}\n{error}")
+        self.enhance_action.setEnabled(self.can_enhance())
         self.show_page_status()
         self.preload_nearby_images()
+
+    def can_enhance(self) -> bool:
+        """A single still picture: not a video, an animation or a spread.
+
+        An animation would come back as one frame, and a spread is two files.
+        """
+        if self.stack.currentWidget() is not self.image_view or len(self.displayed_pages) != 1:
+            return False
+        if self.image_view.source_pixmap.isNull():
+            return False
+        return self.image is None or int(getattr(self.image, "n_frames", 1)) == 1
+
+    def current_pan(self) -> tuple[float, float]:
+        horizontal, vertical = self.image_view.pan_fraction()
+        return (
+            0.5 if horizontal is None else horizontal,
+            0.5 if vertical is None else vertical,
+        )
+
+    def toggle_enhance(self, checked: bool) -> None:
+        if not checked:
+            self.enhancer.cancel()
+            if self.enhance_generation < 0:
+                # Showing the cleaned copy: reload the file, staying where we were.
+                pan = self.current_pan()
+                self.show_current()
+                self.image_view.set_pan_fraction(*pan)
+            self.enhance_generation = 0
+            return
+        if not self.can_enhance():
+            self.enhance_action.setChecked(False)
+            return
+        self.enhance_generation = self.enhancer.request(self.files[self.index])
+        self.statusBar().showMessage(tr("高画質化しています…"))
+
+    def show_enhanced(self, generation: int, image: Image.Image | None) -> None:
+        if generation != self.enhance_generation or not self.enhance_action.isChecked():
+            if image is not None:
+                image.close()
+            return
+        if image is None:
+            self.enhance_generation = 0
+            self.enhance_action.setChecked(False)
+            self.statusBar().showMessage(tr("高画質化できませんでした"), 5000)
+            return
+        pan = self.current_pan()
+        self.animation_timer.stop()
+        self.clear_animation_cache()
+        if self.image is not None:
+            self.image.close()
+        # From here the page is drawn from the cleaned copy, so filters and
+        # effects still apply on top of it (render_frame).
+        self.image = image
+        self.frame_index = 0
+        self.pending_pan = pan
+        self.render_frame()
+        # Negative marks "the cleaned copy is on screen" for toggle_enhance().
+        self.enhance_generation = -1
+        self.show_page_status()
+        self.statusBar().showMessage(
+            tr("高画質化しました（{width}×{height}）", width=image.width, height=image.height),
+            4000,
+        )
 
     def plain_view(self) -> bool:
         """Whether the page can go from the decoder straight to the screen.
@@ -1205,6 +1288,7 @@ class MainWindow(QMainWindow):
 
         self.register_favorite_action = QAction(self)
         self.register_favorite_action.triggered.connect(self.add_favorite)
+        self.favorites_stale = False
         self.favorites_menu = FavoritesMenu()
         self.favorites_menu.leading = [self.register_favorite_action]
         self.favorites_menu.anchor = self.favorites_anchor
@@ -1213,6 +1297,7 @@ class MainWindow(QMainWindow):
         self.favorites_menu.move_requested.connect(self.move_favorite)
         self.favorites_menu.new_group_requested.connect(self.name_new_group)
         self.favorites_menu.aboutToShow.connect(self.prepare_favorites_menu)
+        self.favorites_menu.aboutToHide.connect(self.rebuild_stale_favorites)
         bar.addMenu(self.favorites_menu)
 
         self.window_menu = bar.addMenu("")
@@ -1344,7 +1429,13 @@ class MainWindow(QMainWindow):
         return bar.mapToGlobal(QPoint(title.left(), title.top() + title.height()))
 
     def refresh_favorites(self) -> None:
+        self.favorites_stale = False
         self.favorites_menu.set_favorites(self.favorites)
+
+    def rebuild_stale_favorites(self) -> None:
+        if self.favorites_stale:
+            # After the popup has finished hiding: the rebuild destroys its widgets.
+            QTimer.singleShot(0, self.refresh_favorites)
 
     def current_thumbnail(self) -> QPixmap:
         if self.stack.currentWidget() is self.video_view:
@@ -1361,7 +1452,10 @@ class MainWindow(QMainWindow):
         # back out as well as fitting, which is otherwise only on the toolbar.
         self.fullscreen_action.setChecked(self.isFullScreen())
         self.show_size_state()
-        menu.addActions([self.size_menu.menuAction(), self.fullscreen_action])
+        viewing = [self.size_menu.menuAction(), self.fullscreen_action]
+        if self.stack.currentWidget() is self.image_view:
+            viewing.append(self.enhance_action)
+        menu.addActions(viewing)
         if self.stack.currentWidget() is self.video_view:
             # The toolbar is hidden in full screen, so playback is offered here too.
             menu.addSeparator()
@@ -1398,7 +1492,13 @@ class MainWindow(QMainWindow):
             return
         removed = self.favorites[index]
         self.favorites = self.favorites[:index] + self.favorites[index + 1 :]
-        self.refresh_favorites()
+        if self.favorites_menu.isVisible():
+            # Rebuilding would close the open menu; take the row out in place and
+            # rebuild once it hides (empty groups, the "no favorites" line).
+            self.favorites_menu.drop_entry(index)
+            self.favorites_stale = True
+        else:
+            self.refresh_favorites()
         self.persist_settings()
         export_favorites_for_widget(self.favorites)
         self.statusBar().showMessage(tr("お気に入りから解除しました: {name}", name=removed.name), 3000)
@@ -1711,6 +1811,7 @@ class MainWindow(QMainWindow):
         self.filmstrip.loader.close()
         self.stop_current()
         self.preloader.close()
+        self.enhancer.close()
         super().closeEvent(event)
 
 

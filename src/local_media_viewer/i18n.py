@@ -282,6 +282,28 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "创建 {created}　修改 {modified}",
         KOREAN: "생성 {created}   수정 {modified}",
     },
+    "高画質化": {ENGLISH: "Enhance", CHINESE: "画质增强", KOREAN: "화질 개선"},
+    "この画像のブロックノイズを消して解像度を上げる（表示のみ・元ファイルは変更しない）": {
+        ENGLISH: "Remove block noise from this picture and raise its resolution"
+        " (display only; the file is not changed)",
+        CHINESE: "去除此图像的块状噪点并提高分辨率（仅用于显示，不修改原文件）",
+        KOREAN: "이 이미지의 블록 노이즈를 없애고 해상도를 높입니다(표시 전용, 원본 파일은 변경하지 않음)",
+    },
+    "高画質化しています…": {
+        ENGLISH: "Enhancing…",
+        CHINESE: "正在增强画质…",
+        KOREAN: "화질을 개선하는 중…",
+    },
+    "高画質化しました（{width}×{height}）": {
+        ENGLISH: "Enhanced ({width}×{height})",
+        CHINESE: "已增强画质（{width}×{height}）",
+        KOREAN: "화질을 개선했습니다({width}×{height})",
+    },
+    "高画質化できませんでした": {
+        ENGLISH: "Could not enhance this picture",
+        CHINESE: "无法增强此图像的画质",
+        KOREAN: "화질을 개선할 수 없습니다",
+    },
     "動画を再生できません: {error}": {
         ENGLISH: "Cannot play video: {error}",
         CHINESE: "无法播放视频：{error}",
