@@ -89,10 +89,11 @@ M_RIGHT_FOOT = m_transform().map(QPointF(*CENTRE_LINE[-1]))
 # keeps them on one line.
 MIKAN_X = M_RIGHT_FOOT.x() + MIKAN_OFFSET
 MIKAN_Y = M_BOTTOM - mikan.body_bottom(MIKAN_ROTATION) * MIKAN_SCALE
-# The fruit sticks out to the right of the M, so the pair is shifted left to
-# sit centred in the tile as one mark.
+# The M stays in the middle of the tile and the fruit sticks out to its right.
+# Centring the M and the fruit together as one mark was tried: it pushed the M
+# off centre, and the user wanted the M back in the middle.
 MARK_RIGHT = MIKAN_X + mikan.outline(MIKAN_ROTATION).boundingRect().right() * MIKAN_SCALE
-SHIFT_X = 128 - (M_LEFT + MARK_RIGHT) / 2
+SHIFT_X = 0.0
 
 
 def svg_path(path: QPainterPath) -> str:

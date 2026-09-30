@@ -90,7 +90,7 @@ def test_the_arms_of_the_m_meet_in_one_solid_joint() -> None:
     assert image.pixelColor(centre + 6, 140).name() != "#ffffff"
 
 
-def test_the_mikan_stands_on_the_m_and_the_pair_is_centred() -> None:
+def test_the_mikan_stands_on_the_m_and_the_m_is_centred() -> None:
     layout = icon_layout()
     size = 512
     image = rendered_icon(size)
@@ -113,13 +113,22 @@ def test_the_mikan_stands_on_the_m_and_the_pair_is_centred() -> None:
     # The fruit's bottom sits on the M's baseline, as the user asked.
     assert abs(lowest(mikan, yellow) - lowest(left_leg, white)) <= 1
 
-    # The M and the fruit together sit in the middle of the tile. Only fully
-    # opaque pixels count: the tile's softened corners are not part of it.
-    def mark(x: int, y: int) -> bool:
-        return image.pixelColor(x, y).alpha() == 255 and (white(x, y) or yellow(x, y))
+    # The M itself sits in the middle of the tile, the fruit sticking out to
+    # its right (the user asked for the M back in the centre).
+    assert abs((layout.M_LEFT + layout.M_BOX.right()) / 2 + layout.SHIFT_X - 128) < 0.5
+    columns = [x for x in range(size) if any(white(x, y) for y in range(0, size, 2))]
+    assert abs(columns[0] - layout.M_LEFT * scale) <= 2
 
-    columns = [x for x in range(size) if any(mark(x, y) for y in range(0, size, 2))]
-    assert abs(columns[0] - (size - 1 - columns[-1])) <= 2
+    # The fruit stays clear of the tile's edge (4 px here, 2 in the 256 tile).
+    # Only opaque pixels count: the tile's softened rim is nearly transparent
+    # and its colour values there mean nothing.
+    def solid_yellow(x: int, y: int) -> bool:
+        return image.pixelColor(x, y).alpha() == 255 and yellow(x, y)
+
+    margin = 4
+    for x in range(size):
+        for y in list(range(margin)) + list(range(size - margin, size)):
+            assert not solid_yellow(x, y) and not solid_yellow(y, x)
 
 
 def test_the_right_foot_of_the_m_stays_hidden_behind_the_mikan() -> None:
