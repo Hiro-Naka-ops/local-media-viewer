@@ -50,7 +50,26 @@ PAGE_BUTTONS = {
 FIT_WINDOW = "window"
 FIT_WIDTH = "width"
 FIT_HEIGHT = "height"
-FIT_KINDS = (FIT_WINDOW, FIT_WIDTH, FIT_HEIGHT)
+# Fixed-width fits: the picture's width is pinned to this percentage of the
+# view, centred, leaving equal margins on both sides (100% at the narrowest
+# still overflowing side is the same picture as FIT_WIDTH, just centred
+# instead of pinned left). 60% is roughly the 1:3:1 margin-image-margin split.
+NARROW_PERCENTS = (100, 80, 60, 40, 20)
+
+
+def narrow_kind(percent: int) -> str:
+    return f"narrow{percent}"
+
+
+def narrow_percent(kind: str) -> int | None:
+    """The percentage a narrow fit kind encodes, or None for any other kind."""
+    if kind.startswith("narrow") and kind[len("narrow") :].isdigit():
+        return int(kind[len("narrow") :])
+    return None
+
+
+FIT_NARROW_KINDS = tuple(narrow_kind(percent) for percent in NARROW_PERCENTS)
+FIT_KINDS = (FIT_WINDOW, FIT_WIDTH, FIT_HEIGHT) + FIT_NARROW_KINDS
 # The fitted side is pinned to its start rather than centred. When the fit
 # overflows the other side, QGraphicsView centres using a scroll bar width that
 # differs from the one the Windows 11 style draws, which left the picture a few
@@ -59,6 +78,7 @@ FIT_ALIGNMENT = {
     FIT_WINDOW: Qt.AlignmentFlag.AlignCenter,
     FIT_WIDTH: Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
     FIT_HEIGHT: Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+    **{kind: Qt.AlignmentFlag.AlignCenter for kind in FIT_NARROW_KINDS},
 }
 
 # Where 毎回先頭に戻す puts a new page: horizontally centred, at the top.
@@ -355,6 +375,14 @@ class ImageView(QGraphicsView):
             if width * scale > room.width():
                 bar = self.horizontalScrollBar().sizeHint().height()
                 scale = (room.height() - bar) / height
+            return scale
+        percent = narrow_percent(self.fit_kind)
+        if percent is not None:
+            fraction = percent / 100
+            scale = room.width() * fraction / width
+            if height * scale > room.height():
+                bar = self.verticalScrollBar().sizeHint().width()
+                scale = (room.width() - bar) * fraction / width
             return scale
         return min(room.width() / width, room.height() / height)
 

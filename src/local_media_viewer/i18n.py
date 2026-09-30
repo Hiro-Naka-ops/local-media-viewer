@@ -39,6 +39,8 @@ CATALOG: dict[str, dict[str, str]] = {
     "全画面表示": {ENGLISH: "Full Screen", CHINESE: "全屏显示", KOREAN: "전체 화면"},
     "フィルター": {ENGLISH: "Filters", CHINESE: "滤镜", KOREAN: "필터"},
     "フィルムストリップ": {ENGLISH: "Filmstrip", CHINESE: "胶片栏", KOREAN: "필름스트립"},
+    "ツールバー": {ENGLISH: "Toolbar", CHINESE: "工具栏", KOREAN: "도구 모음"},
+    "ステータスバー": {ENGLISH: "Status Bar", CHINESE: "状态栏", KOREAN: "상태 표시줄"},
     "音量": {ENGLISH: "Volume", CHINESE: "音量", KOREAN: "음량"},
     # Menu bar. The (&X) letter is the Alt key, written the way Windows
     # writes it for languages whose words have no Latin letter to underline.
@@ -80,6 +82,32 @@ CATALOG: dict[str, dict[str, str]] = {
     "横幅に合わせる": {ENGLISH: "Fit to Width", CHINESE: "适应宽度", KOREAN: "너비에 맞춤"},
     "縦幅に合わせる": {ENGLISH: "Fit to Height", CHINESE: "适应高度", KOREAN: "높이에 맞춤"},
     "原寸で表示": {ENGLISH: "Actual Size", CHINESE: "原始大小", KOREAN: "원본 크기"},
+    "幅を固定": {ENGLISH: "Fixed Width", CHINESE: "固定宽度", KOREAN: "고정 너비"},
+    "幅100%で固定": {
+        ENGLISH: "Fixed at 100% Width",
+        CHINESE: "固定为100%宽度",
+        KOREAN: "너비 100%로 고정",
+    },
+    "幅80%で固定": {
+        ENGLISH: "Fixed at 80% Width",
+        CHINESE: "固定为80%宽度",
+        KOREAN: "너비 80%로 고정",
+    },
+    "幅60%で固定": {
+        ENGLISH: "Fixed at 60% Width",
+        CHINESE: "固定为60%宽度",
+        KOREAN: "너비 60%로 고정",
+    },
+    "幅40%で固定": {
+        ENGLISH: "Fixed at 40% Width",
+        CHINESE: "固定为40%宽度",
+        KOREAN: "너비 40%로 고정",
+    },
+    "幅20%で固定": {
+        ENGLISH: "Fixed at 20% Width",
+        CHINESE: "固定为20%宽度",
+        KOREAN: "너비 20%로 고정",
+    },
     "移動(&G)": {ENGLISH: "&Go", CHINESE: "转到(&G)", KOREAN: "이동(&G)"},
     "最初のページ": {ENGLISH: "First Page", CHINESE: "第一页", KOREAN: "첫 페이지"},
     "最後のページ": {ENGLISH: "Last Page", CHINESE: "最后一页", KOREAN: "마지막 페이지"},

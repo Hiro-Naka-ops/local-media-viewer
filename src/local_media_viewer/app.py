@@ -95,11 +95,14 @@ from local_media_viewer.sorticon import sort_icon
 from local_media_viewer.spread import compose_spread, is_animated
 from local_media_viewer.viewer import (
     FIT_HEIGHT,
+    FIT_KINDS,
     FIT_WIDTH,
     FIT_WINDOW,
+    NARROW_PERCENTS,
     PAN_TOP_CENTRE,
     ImageView,
     VideoView,
+    narrow_kind,
 )
 
 STATUS_HINT_COLOR = "#98A2B3"
@@ -111,6 +114,16 @@ SIZE_LABELS = [
     (FIT_HEIGHT, "縦幅に合わせる"),
     (ACTUAL_SIZE, "原寸で表示"),
 ]
+# The 幅を固定 submenu: the picture's width pinned to a percentage of the
+# view, centred, in 20% steps. Labels are i18n keys.
+NARROW_WIDTH_LABELS = {
+    100: "幅100%で固定",
+    80: "幅80%で固定",
+    60: "幅60%で固定",
+    40: "幅40%で固定",
+    20: "幅20%で固定",
+}
+NARROW_LABELS = [(narrow_kind(percent), NARROW_WIDTH_LABELS[percent]) for percent in NARROW_PERCENTS]
 # The パン位置 modes: where a new page opens. Labels are i18n keys.
 PAN_TOP = "top"
 PAN_KEEP = "keep"
@@ -217,7 +230,8 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.image_view = ImageView()
-        self.image_view.fit_kind = self.settings.fit_kind
+        if self.settings.fit_kind in FIT_KINDS:
+            self.image_view.fit_kind = self.settings.fit_kind
         self.video_view = VideoView()
         self.image_view.navigate.connect(self.navigate)
         self.video_view.navigate.connect(self.navigate)
@@ -339,6 +353,14 @@ class MainWindow(QMainWindow):
         self.filmstrip_action.setCheckable(True)
         self.filmstrip_action.setChecked(self.settings.filmstrip_visible)
         self.filmstrip_action.toggled.connect(self.toggle_filmstrip)
+        self.toolbar_action = QAction(self)
+        self.toolbar_action.setCheckable(True)
+        self.toolbar_action.setChecked(self.settings.toolbar_visible)
+        self.toolbar_action.toggled.connect(self.toggle_toolbar)
+        self.status_bar_action = QAction(self)
+        self.status_bar_action.setCheckable(True)
+        self.status_bar_action.setChecked(self.settings.status_bar_visible)
+        self.status_bar_action.toggled.connect(self.toggle_status_bar)
         self.option_groups = self.create_option_actions()
         self.option_actions = [
             action for group in self.option_groups for action in group
@@ -403,6 +425,8 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(self.toggle_fullscreen)
         self.toggle_filter_panel(self.settings.filter_panel_visible)
         self.toggle_filmstrip(self.settings.filmstrip_visible)
+        self.toggle_toolbar(self.settings.toolbar_visible)
+        self.toggle_status_bar(self.settings.status_bar_visible)
 
     def add_toolbar_actions(self, actions: list[QAction]) -> list[QAction]:
         self.toolbar.addActions(actions)
@@ -443,6 +467,8 @@ class MainWindow(QMainWindow):
             [
                 self.filmstrip_action,
                 self.filter_action,
+                self.toolbar_action,
+                self.status_bar_action,
             ],
             [
                 self.effect_menu.menuAction(),
@@ -554,12 +580,17 @@ class MainWindow(QMainWindow):
         self.size_menu.setTitle(tr("表示サイズ"))
         for key, label in SIZE_LABELS:
             self.size_actions[key].setText(tr(label))
+        self.narrow_menu.setTitle(tr("幅を固定"))
+        for key, label in NARROW_LABELS:
+            self.size_actions[key].setText(tr(label))
         self.go_menu.setTitle(tr("移動(&G)"))
         self.first_page_action.setText(tr("最初のページ"))
         self.last_page_action.setText(tr("最後のページ"))
         self.go_to_page_action.setText(tr("ページを指定…"))
         self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
         self.filmstrip_action.setText(tr("フィルムストリップ"))
+        self.toolbar_action.setText(tr("ツールバー"))
+        self.status_bar_action.setText(tr("ステータスバー"))
         self.pan_menu.setTitle(tr("パン位置"))
         for key, label in PAN_LABELS:
             self.pan_actions[key].setText(tr(label))
@@ -1228,6 +1259,15 @@ class MainWindow(QMainWindow):
             self.size_choices.addAction(action)
             menu.addAction(action)
             self.size_actions[key] = action
+        self.narrow_menu = QMenu(self)
+        for key, _label in NARROW_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, name=key: self.choose_size(name))
+            self.size_choices.addAction(action)
+            self.narrow_menu.addAction(action)
+            self.size_actions[key] = action
+        menu.addMenu(self.narrow_menu)
         menu.addSeparator()
         menu.addAction(self.fit_action)
         menu.aboutToShow.connect(self.show_size_state)
@@ -1733,6 +1773,8 @@ class MainWindow(QMainWindow):
             hue=values.hue,
             filter_panel_visible=self.filter_action.isChecked(),
             filmstrip_visible=self.filmstrip_action.isChecked(),
+            toolbar_visible=self.toolbar_action.isChecked(),
+            status_bar_visible=self.status_bar_action.isChecked(),
             volume=self.volume_slider.value(),
             window_geometry=bytes(self.saveGeometry().toBase64()).decode("ascii"),
             # Still written, so an older copy of the app reads a sensible choice.
@@ -1764,8 +1806,8 @@ class MainWindow(QMainWindow):
         if self.isFullScreen():
             self.showNormal()
             self.menuBar().setVisible(True)
-            self.toolbar.setVisible(True)
-            self.statusBar().setVisible(True)
+            self.toolbar.setVisible(self.toolbar_action.isChecked())
+            self.statusBar().setVisible(self.status_bar_action.isChecked())
             self.filter_panel.setVisible(self.filter_action.isChecked())
             self.filmstrip.setVisible(self.filmstrip_action.isChecked())
         else:
@@ -1776,6 +1818,16 @@ class MainWindow(QMainWindow):
             self.filmstrip.setVisible(False)
             self.showFullScreen()
         self.fullscreen_action.setChecked(self.isFullScreen())
+
+    def toggle_toolbar(self, visible: bool) -> None:
+        if not self.isFullScreen():
+            self.toolbar.setVisible(visible)
+        self.persist_settings()
+
+    def toggle_status_bar(self, visible: bool) -> None:
+        if not self.isFullScreen():
+            self.statusBar().setVisible(visible)
+        self.persist_settings()
 
     def toggle_filter_panel(self, visible: bool) -> None:
         if not self.isFullScreen():

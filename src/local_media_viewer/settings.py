@@ -33,6 +33,8 @@ class ViewerSettings:
     hue: int = 0
     filter_panel_visible: bool = False
     filmstrip_visible: bool = True
+    toolbar_visible: bool = True
+    status_bar_visible: bool = True
     volume: int = 50
     window_geometry: str = ""
     reset_pan_on_change: bool = True

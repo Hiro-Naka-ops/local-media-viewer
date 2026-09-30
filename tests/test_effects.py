@@ -85,7 +85,7 @@ def test_the_effect_submenu_sits_with_the_drawing_options(tmp_path: Path, monkey
     try:
         panels = [action.text() for action in window.option_groups[0]]
         # The tab puts F in the menu's key column.
-        assert panels == ["フィルムストリップ", "フィルター	F"]
+        assert panels == ["フィルムストリップ", "フィルター	F", "ツールバー", "ステータスバー"]
 
         group = window.option_groups[1]
         labels = [action.text() for action in group]

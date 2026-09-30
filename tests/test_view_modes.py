@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 import local_media_viewer.app as app_module
 from local_media_viewer.preloader import load_frame
 from local_media_viewer.settings import ViewerSettings
-from local_media_viewer.viewer import FIT_HEIGHT, FIT_WIDTH, FIT_WINDOW
+from local_media_viewer.viewer import FIT_HEIGHT, FIT_WIDTH, FIT_WINDOW, narrow_kind
 
 
 def make_window(monkeypatch, settings: ViewerSettings | None = None) -> app_module.MainWindow:
@@ -71,6 +71,96 @@ def test_fitting_to_width_or_height_fills_that_side(tmp_path: Path, monkeypatch)
         assert width <= view.viewport().width() and height <= view.viewport().height()
     finally:
         window.close()
+
+
+def test_narrow_fits_leave_equal_margins_at_each_percentage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    Image.new("RGB", (300, 300), "red").save(tmp_path / "square.png")
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.resize(900, 700)
+        window.show()
+        window.open_path(tmp_path / "square.png")
+        app.processEvents()
+        view = window.image_view
+
+        for percent in (100, 80, 60, 40, 20):
+            window.size_actions[narrow_kind(percent)].trigger()
+            app.processEvents()
+            width, _height = shown_size(window)
+            viewport_width = view.viewport().width()
+            # Roughly percent% of the view's width; not pinned exactly since
+            # the viewport can still be settling into its final on-screen
+            # size at this point.
+            assert abs(width - viewport_width * percent / 100) <= 20
+            # Centred: equal margins on both sides.
+            left_margin = view.mapFromScene(0, 0).x()
+            assert abs(left_margin - (viewport_width - width) / 2) <= 1
+            assert view.horizontalScrollBar().maximum() == 0
+    finally:
+        window.close()
+
+
+def test_toolbar_action_hides_and_remembers_the_toolbar(tmp_path: Path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.show()
+        app.processEvents()
+        assert window.toolbar_action.isChecked()
+        assert window.toolbar.isVisible()
+
+        window.toolbar_action.trigger()
+        assert not window.toolbar.isVisible()
+        assert window.saved[-1].toolbar_visible is False
+
+        # Hidden in windowed mode, it stays hidden through a fullscreen round trip.
+        window.toggle_fullscreen()
+        assert not window.toolbar.isVisible()
+        window.toggle_fullscreen()
+        assert not window.toolbar.isVisible()
+    finally:
+        window.close()
+    restored = make_window(monkeypatch, ViewerSettings(toolbar_visible=False))
+    try:
+        restored.show()
+        app.processEvents()
+        assert not restored.toolbar_action.isChecked()
+        assert not restored.toolbar.isVisible()
+    finally:
+        restored.close()
+
+
+def test_status_bar_action_hides_and_remembers_the_status_bar(tmp_path: Path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.show()
+        app.processEvents()
+        assert window.status_bar_action.isChecked()
+        assert window.statusBar().isVisible()
+
+        window.status_bar_action.trigger()
+        assert not window.statusBar().isVisible()
+        assert window.saved[-1].status_bar_visible is False
+
+        # Hidden in windowed mode, it stays hidden through a fullscreen round trip.
+        window.toggle_fullscreen()
+        assert not window.statusBar().isVisible()
+        window.toggle_fullscreen()
+        assert not window.statusBar().isVisible()
+    finally:
+        window.close()
+    restored = make_window(monkeypatch, ViewerSettings(status_bar_visible=False))
+    try:
+        restored.show()
+        app.processEvents()
+        assert not restored.status_bar_action.isChecked()
+        assert not restored.statusBar().isVisible()
+    finally:
+        restored.close()
 
 
 def test_space_toggles_between_the_chosen_fit_and_actual_size(tmp_path: Path, monkeypatch) -> None:
