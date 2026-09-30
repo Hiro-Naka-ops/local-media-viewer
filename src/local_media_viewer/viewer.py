@@ -78,7 +78,9 @@ FIT_ALIGNMENT = {
     FIT_WINDOW: Qt.AlignmentFlag.AlignCenter,
     FIT_WIDTH: Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
     FIT_HEIGHT: Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
-    **{kind: Qt.AlignmentFlag.AlignCenter for kind in FIT_NARROW_KINDS},
+    # Pinned left too, and centred by hand in centre_narrow_fit for the same
+    # reason: Qt's own centring sits half a bar off once the bar is shown.
+    **{kind: Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter for kind in FIT_NARROW_KINDS},
 }
 
 # Where 毎回先頭に戻す puts a new page: horizontally centred, at the top.
@@ -344,6 +346,7 @@ class ImageView(QGraphicsView):
         self.setAlignment(FIT_ALIGNMENT[self.fit_kind])
         if not self.source_pixmap.isNull():
             self.render_at_scale(max(0.01, self.fit_scale()))
+            self.centre_narrow_fit()
 
     def set_fit_kind(self, kind: str) -> None:
         self.fit_kind = kind if kind in FIT_KINDS else FIT_WINDOW
@@ -378,13 +381,39 @@ class ImageView(QGraphicsView):
             return scale
         percent = narrow_percent(self.fit_kind)
         if percent is not None:
-            fraction = percent / 100
-            scale = room.width() * fraction / width
-            if height * scale > room.height():
-                bar = self.verticalScrollBar().sizeHint().width()
-                scale = (room.width() - bar) * fraction / width
-            return scale
+            return self.narrow_room_width() * percent / 100 / width
         return min(room.width() / width, room.height() / height)
+
+    def narrow_room_width(self) -> float:
+        """The view's width a narrow fit shares out: the whole width, less
+        the vertical bar when the fitted picture overflows the height."""
+        room = self.maximumViewportSize()
+        percent = narrow_percent(self.fit_kind) or 100
+        width = self.source_pixmap.width()
+        height = self.source_pixmap.height()
+        if height * room.width() * percent / 100 / width > room.height():
+            return room.width() - self.verticalScrollBar().sizeHint().width()
+        return room.width()
+
+    def centre_narrow_fit(self) -> None:
+        """Centre a narrow fit by padding the scene's left side by one margin.
+
+        The picture is pinned left, so the padding alone sets where it lands,
+        and the padded scene stays narrower than the view, so no horizontal
+        bar appears. macOS overlays its bars without taking the view's width,
+        and there Qt's own centring lands right while a padded scene does not,
+        so it is left to Qt.
+        """
+        if narrow_percent(self.fit_kind) is None or self.source_pixmap.isNull():
+            return
+        style = self.style()
+        if style.styleHint(QStyle.StyleHint.SH_ScrollBar_Transient, None, self.verticalScrollBar()):
+            self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            return
+        view_scale = self.transform().m11()
+        rect = self.item.boundingRect()
+        margin = max(0.0, (self.viewport().width() - rect.width() * view_scale) / 2)
+        self.scene().setSceneRect(rect.adjusted(-margin / view_scale, 0, 0, 0))
 
     def original_size(self) -> None:
         self.fit_mode = False

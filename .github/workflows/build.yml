@@ -120,7 +120,14 @@ jobs:
         run: python scripts/ci_annotate.py pytest.log "mac ${{ matrix.arch }}"
 
       - name: Build
-        run: sh scripts/build_mac.sh
+        # build_mac.sh builds from .venv/. Made here rather than with
+        # setup_mac.sh, whose signing certificate needs a login keychain the
+        # runner lacks; without it build_mac.sh signs ad hoc.
+        shell: bash  # word-splits $REQUIREMENTS into one argument per package
+        run: |
+          python -m venv .venv
+          .venv/bin/python3 -m pip install $REQUIREMENTS pyinstaller==6.19.0
+          sh scripts/build_mac.sh
 
       - uses: actions/upload-artifact@v7
         with:
