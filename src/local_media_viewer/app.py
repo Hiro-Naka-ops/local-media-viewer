@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from collections import OrderedDict
-from datetime import datetime
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
@@ -12,22 +13,25 @@ from PIL.ImageQt import ImageQt
 from PySide6.QtCore import (
     QByteArray,
     QCoreApplication,
+    QEvent,
     QLibraryInfo,
     QLocale,
     QPoint,
     QRect,
+    Qt,
     QTimer,
     QTranslator,
-    Qt,
     QUrl,
+    Signal,
 )
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
-    QColor,
     QCloseEvent,
+    QColor,
     QDragEnterEvent,
     QDropEvent,
+    QFileOpenEvent,
     QGuiApplication,
     QKeyEvent,
     QKeySequence,
@@ -55,14 +59,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from local_media_viewer import i18n
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
-from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail
-from local_media_viewer.filters import FilterValues, apply_filters
+from local_media_viewer.favorites import FavoritesMenu, encode_thumbnail, normalize_thumbnail
 from local_media_viewer.filmstrip import Filmstrip
-from local_media_viewer import i18n
+from local_media_viewer.filters import FilterValues, apply_filters
 from local_media_viewer.i18n import LANGUAGES, language_menu_title, tr
+from local_media_viewer.mac_widget import (
+    export_favorites_for_widget,
+    parse_widget_favorite_id,
+    resolve_favorite,
+)
 from local_media_viewer.media import (
     IMAGE_EXTENSIONS,
     SORT_LABELS,
@@ -75,23 +84,22 @@ from local_media_viewer.media import (
 )
 from local_media_viewer.placement import LEFT, RIGHT, carried_over, centered, half
 from local_media_viewer.preloader import ImagePreloader, load_frame, load_image
-from local_media_viewer.sorticon import sort_icon
 from local_media_viewer.settings import (
     Favorite,
     ViewerSettings,
     load_settings,
     save_settings,
 )
+from local_media_viewer.sorticon import sort_icon
 from local_media_viewer.spread import compose_spread, is_animated
 from local_media_viewer.viewer import (
-    PAN_TOP_CENTRE,
     FIT_HEIGHT,
     FIT_WIDTH,
     FIT_WINDOW,
+    PAN_TOP_CENTRE,
     ImageView,
     VideoView,
 )
-
 
 STATUS_HINT_COLOR = "#98A2B3"
 # The 表示サイズ entries: the three fits, then actual size. Labels are i18n keys.
@@ -175,6 +183,23 @@ class MainWindow(QMainWindow):
         )
         self.folder_prompt_open = False
         self.favorites: list[Favorite] = list(self.settings.favorites)
+        # Favorites registered before square thumbnails existed kept
+        # whatever letterboxed, unevenly sized crop their source image
+        # happened to produce, so their menu rows displayed at mismatched
+        # sizes; normalize and save them once, now that ids etc. are settled.
+        normalized = [
+            replace(favorite, thumbnail=normalize_thumbnail(favorite.thumbnail))
+            for favorite in self.favorites
+        ]
+        thumbnails_changed = [f.thumbnail for f in normalized] != [
+            f.thumbnail for f in self.favorites
+        ]
+        self.favorites = normalized
+        if thumbnails_changed:
+            QTimer.singleShot(500, self.persist_settings)
+        # Deferred: the widget only needs to catch up shortly after launch,
+        # not before the window has had its first paint.
+        QTimer.singleShot(500, lambda: export_favorites_for_widget(self.favorites))
         self.spread_second: Image.Image | None = None
         self.spread_anchor = max(0, self.settings.spread_anchor)
         self.displayed_pages: list[int] = []
@@ -1355,6 +1380,7 @@ class MainWindow(QMainWindow):
         folder = str(self.current_folder)
         path = self.files[self.index] if 0 <= self.index < len(self.files) else None
         favorite = Favorite(
+            id=uuid.uuid4().hex,
             folder=folder,
             name=self.current_folder.name or folder,
             path=str(path) if path is not None else "",
@@ -1364,6 +1390,7 @@ class MainWindow(QMainWindow):
         self.favorites = [*self.favorites, favorite]
         self.refresh_favorites()
         self.persist_settings()
+        export_favorites_for_widget(self.favorites)
         self.statusBar().showMessage(tr("お気に入りに登録しました: {name}", name=favorite.name), 3000)
 
     def remove_favorite(self, index: int) -> None:
@@ -1373,6 +1400,7 @@ class MainWindow(QMainWindow):
         self.favorites = self.favorites[:index] + self.favorites[index + 1 :]
         self.refresh_favorites()
         self.persist_settings()
+        export_favorites_for_widget(self.favorites)
         self.statusBar().showMessage(tr("お気に入りから解除しました: {name}", name=removed.name), 3000)
 
     def move_favorite(self, index: int, group: str) -> None:
@@ -1382,6 +1410,7 @@ class MainWindow(QMainWindow):
         self.favorites = self.favorites[:index] + [moved] + self.favorites[index + 1 :]
         self.refresh_favorites()
         self.persist_settings()
+        export_favorites_for_widget(self.favorites)
         where = group or tr("フォルダなし")
         self.statusBar().showMessage(
             tr("{name} を「{group}」へ移動しました", name=moved.name, group=where), 3000
@@ -1412,6 +1441,32 @@ class MainWindow(QMainWindow):
             )
             return
         self.open_folder(target, 0)
+
+    def handle_widget_url(self, url: str) -> None:
+        """A click on the Mac desktop widget, delivered as our own URL scheme."""
+        favorite_id = parse_widget_favorite_id(url)
+        if favorite_id is None:
+            return
+        favorite = resolve_favorite(self.favorites, favorite_id)
+        if favorite is None:
+            return
+        self.open_favorite(self.favorites.index(favorite))
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def handle_opened_file(self, path: str) -> None:
+        """A file handed to the app by macOS: double-click, "open with", drag
+        onto the dock icon, or a second launch while already running.
+
+        On macOS this arrives only as a QFileOpenEvent (Application.event
+        below), never through sys.argv, so main()'s own argv scan alone
+        cannot see it.
+        """
+        self.open_path(Path(path))
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def select_filmstrip_item(self, index: int) -> None:
         if 0 <= index < len(self.files) and index != self.index:
@@ -1659,12 +1714,72 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def classify_file_open_event(event: QFileOpenEvent) -> tuple[bool, str]:
+    """(is a local file, the path or the URL string) for a QFileOpenEvent.
+
+    QFileOpenEvent.file() is only ever set for an actual file; a custom
+    scheme like our own widgetURL only ever populates .url(). Split out from
+    Application.event() so it can be tested without a live QApplication,
+    which only one of can exist per process.
+    """
+    path = event.file()
+    if path:
+        return True, path
+    return False, event.url().toString()
+
+
+class Application(QApplication):
+    """Adds the one thing QApplication itself has no signal for.
+
+    On macOS, both opening a file (double-click, "open with", a drag onto
+    the dock icon) and activating the app through our own widgetURL scheme
+    arrive the same way: a QFileOpenEvent, never through sys.argv, whether
+    at cold launch or while already running. Off macOS this event never
+    fires, so it costs nothing there.
+
+    At a cold launch this can arrive before anything is connected to
+    file_opened / widget_url_opened — macOS can deliver it as soon as
+    Qt's Cocoa backend registers its Apple Event handler, which happens
+    inside QApplication's own construction, before main() gets to build
+    MainWindow and wire the signals up. A signal emitted with no receiver
+    is simply dropped, so the event would otherwise be lost and the app
+    would fall back to reopening whatever was last on screen. pending_file /
+    pending_widget_url latch it so main() can still pick it up afterwards.
+    """
+
+    widget_url_opened = Signal(str)
+    file_opened = Signal(str)
+
+    def __init__(self, argv: list[str]) -> None:
+        super().__init__(argv)
+        self.pending_file: str | None = None
+        self.pending_widget_url: str | None = None
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.FileOpen:
+            is_file, value = classify_file_open_event(event)
+            if is_file:
+                self.pending_file = value
+                self.file_opened.emit(value)
+            else:
+                self.pending_widget_url = value
+                self.widget_url_opened.emit(value)
+            return True
+        return super().event(event)
+
+
 def main() -> None:
     claim_taskbar_identity()
-    app = QApplication(sys.argv)
+    app = Application(sys.argv)
     app.setApplicationName("Local Media Viewer")
     app.setWindowIcon(app_icon())
     initial_path = next((Path(argument) for argument in sys.argv[1:] if Path(argument).exists()), None)
+    if initial_path is None and app.pending_file is not None:
+        initial_path = Path(app.pending_file)
     window = MainWindow(initial_path)
+    app.widget_url_opened.connect(window.handle_widget_url)
+    app.file_opened.connect(window.handle_opened_file)
+    if app.pending_widget_url is not None:
+        window.handle_widget_url(app.pending_widget_url)
     window.show()
     raise SystemExit(app.exec())

@@ -2,11 +2,11 @@ import importlib
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QFileOpenEvent, QWheelEvent
 
-import local_media_viewer.appicon as appicon
-from local_media_viewer import settings
+from local_media_viewer import appicon, settings
+from local_media_viewer.app import classify_file_open_event
 from local_media_viewer.viewer import SWIPE_DISTANCE, WheelPager
 
 
@@ -71,3 +71,20 @@ def test_the_icon_module_loads_without_windll(monkeypatch) -> None:
     finally:
         monkeypatch.undo()
         importlib.reload(appicon)
+
+
+def test_a_file_opened_via_finder_is_classified_as_a_file() -> None:
+    # Double-click, "open with", drag onto the dock icon: QFileOpenEvent.file()
+    # is set. Must be routed to open_path, not mistaken for a widgetURL.
+    event = QFileOpenEvent(QUrl.fromLocalFile("/pictures/スクリーンショット 2026-09-30.png"))
+    is_file, value = classify_file_open_event(event)
+    assert is_file is True
+    assert value == "/pictures/スクリーンショット 2026-09-30.png"
+
+
+def test_the_widget_url_scheme_is_classified_as_a_url_not_a_file() -> None:
+    # The Mac widget's own scheme: file() is empty, only url() is meaningful.
+    event = QFileOpenEvent(QUrl("localmediaviewer://favorite?id=abc123"))
+    is_file, value = classify_file_open_event(event)
+    assert is_file is False
+    assert value == "localmediaviewer://favorite?id=abc123"

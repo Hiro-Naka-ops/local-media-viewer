@@ -1,14 +1,19 @@
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QContextMenuEvent, QWheelEvent
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, Qt
+from PySide6.QtGui import QColor, QContextMenuEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import local_media_viewer.app as app_module
 import local_media_viewer.favorites as favorites_module
-from local_media_viewer.favorites import decode_thumbnail
-from local_media_viewer.settings import ViewerSettings
+from local_media_viewer.favorites import (
+    center_square_crop,
+    decode_square_thumbnail,
+    decode_thumbnail,
+    normalize_thumbnail,
+)
+from local_media_viewer.settings import Favorite, ViewerSettings
 
 
 def wheel_event(widget) -> QWheelEvent:
@@ -64,6 +69,112 @@ def test_favorite_shows_folder_name_and_registration_thumbnail(
         window.navigate(1)
         assert window.files[window.index].name == "2.png"
         assert window.favorites[0].thumbnail == favorite.thumbnail
+    finally:
+        window.close()
+
+
+def test_center_square_crop_takes_the_shorter_side_from_the_center() -> None:
+    QApplication.instance() or QApplication([])
+    pixmap = QPixmap(100, 40)
+    pixmap.fill(QColor("#336699"))
+
+    cropped = center_square_crop(pixmap)
+
+    assert cropped.width() == 40
+    assert cropped.height() == 40
+
+
+def legacy_thumbnail_data() -> str:
+    """A base64 PNG shaped like thumbnails stored before square cropping
+    existed: letterboxed to a non-square, oddly sized rectangle."""
+    QApplication.instance() or QApplication([])
+    pixmap = QPixmap(12, 8)
+    pixmap.fill(QColor("#336699"))
+    letterboxed = pixmap.scaled(
+        64,
+        40,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    assert letterboxed.width() != letterboxed.height()
+
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    letterboxed.save(buffer, "PNG")
+    return bytes(buffer.data().toBase64()).decode("ascii")
+
+
+def test_decode_square_thumbnail_squares_and_resizes_an_old_letterboxed_thumbnail() -> None:
+    """Thumbnails stored before square cropping was added kept the original
+    aspect ratio and whatever size the source image happened to produce
+    (see encode_thumbnail's history); decoding one for display must still
+    come out square and at the current thumbnail size, so rows of old and
+    new entries line up instead of looking mismatched."""
+    squared = decode_square_thumbnail(legacy_thumbnail_data())
+    assert squared.width() == squared.height() == favorites_module.THUMBNAIL_SIZE.width()
+
+
+def test_normalize_thumbnail_rescales_a_legacy_thumbnail(monkeypatch) -> None:
+    normalized_data = normalize_thumbnail(legacy_thumbnail_data())
+    normalized = decode_thumbnail(normalized_data)
+    assert normalized.width() == normalized.height() == favorites_module.THUMBNAIL_SIZE.width()
+
+
+def test_normalize_thumbnail_leaves_an_empty_thumbnail_alone() -> None:
+    assert normalize_thumbnail("") == ""
+
+
+def test_opening_the_app_normalizes_legacy_favorite_thumbnails(monkeypatch) -> None:
+    QApplication.instance() or QApplication([])
+    legacy = Favorite(id="a", folder="/legacy", name="legacy", thumbnail=legacy_thumbnail_data())
+    monkeypatch.setattr(app_module, "load_settings", lambda: ViewerSettings(favorites=[legacy]))
+    monkeypatch.setattr(app_module, "save_settings", lambda _settings: None)
+
+    window = app_module.MainWindow()
+    try:
+        migrated = decode_thumbnail(window.favorites[0].thumbnail)
+        assert migrated.width() == migrated.height() == favorites_module.THUMBNAIL_SIZE.width()
+    finally:
+        window.close()
+
+
+def test_favorite_thumbnail_and_menu_icon_are_square(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "作品集"
+    folder.mkdir()
+    save_image(folder / "1.png", "red")  # 12x8, not square
+
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "1.png")
+        window.add_favorite()
+
+        favorite = window.favorites[0]
+        stored = decode_thumbnail(favorite.thumbnail)
+        assert stored.width() == stored.height()
+
+        button = window.favorites_menu.buttons[0]
+        assert not button.icon().isNull()
+    finally:
+        window.close()
+
+
+def test_clicking_the_remove_button_releases_that_entry(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "works"
+    folder.mkdir()
+    save_image(folder / "1.png", "red")
+
+    app = QApplication.instance() or QApplication([])
+    window = make_window(monkeypatch)
+    try:
+        window.open_path(folder / "1.png")
+        window.add_favorite()
+        assert len(window.favorites_menu.remove_buttons) == 1
+
+        window.favorites_menu.remove_buttons[0].click()
+        app.processEvents()  # the entry reports itself once the popup has closed
+
+        assert window.favorites == []
+        assert window.favorites_menu.buttons == []
     finally:
         window.close()
 

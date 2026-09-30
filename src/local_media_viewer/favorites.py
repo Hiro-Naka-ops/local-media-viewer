@@ -7,6 +7,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QSize, Qt, QT
 from PySide6.QtGui import QAction, QContextMenuEvent, QShowEvent, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
+    QHBoxLayout,
     QMenu,
     QScrollArea,
     QSizePolicy,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 from local_media_viewer.i18n import tr
 from local_media_viewer.settings import Favorite
 
-THUMBNAIL_SIZE = QSize(64, 40)
+THUMBNAIL_SIZE = QSize(40, 40)
 LABEL_LIMIT = 24
 VISIBLE_ENTRIES = 10
 MINIMUM_ENTRIES = 3
@@ -39,11 +40,35 @@ ENTRY_STYLE = (
     "QToolButton:hover { background: palette(highlight); color: palette(highlighted-text); }"
 )
 
+REMOVE_STYLE = (
+    "QToolButton { border: none; padding: 4px 10px; color: palette(mid); font-weight: bold; }"
+    "QToolButton:hover { background: #e04040; color: white; }"
+)
+
+
+def center_square_crop(pixmap: QPixmap) -> QPixmap:
+    """Crop to a square around the center, keeping the shorter side in full.
+
+    Applied both when a thumbnail is first stored and whenever an older,
+    letterboxed one is displayed, so every entry ends up the same square
+    shape regardless of when it was registered.
+    """
+    if pixmap.isNull():
+        return pixmap
+    size = pixmap.size()
+    side = min(size.width(), size.height())
+    if side <= 0:
+        return pixmap
+    x = (size.width() - side) // 2
+    y = (size.height() - side) // 2
+    return pixmap.copy(x, y, side, side)
+
+
 def encode_thumbnail(pixmap: QPixmap) -> str:
     """Shrink the displayed frame and store it as base64 PNG inside the settings."""
     if pixmap.isNull():
         return ""
-    scaled = pixmap.scaled(
+    scaled = center_square_crop(pixmap).scaled(
         THUMBNAIL_SIZE,
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
@@ -60,6 +85,36 @@ def decode_thumbnail(data: str) -> QPixmap:
     if data:
         pixmap.loadFromData(QByteArray.fromBase64(data.encode("ascii")), "PNG")
     return pixmap
+
+
+def decode_square_thumbnail(data: str) -> QPixmap:
+    """decode_thumbnail(), cropped and rescaled to THUMBNAIL_SIZE for display.
+
+    Thumbnails stored before square cropping was added are still
+    letterboxed (aspect-ratio preserved) and sized to whatever their source
+    image happened to produce; normalizing both here means every entry
+    displays as the same uniform square without needing to re-register it.
+    """
+    cropped = center_square_crop(decode_thumbnail(data))
+    if cropped.isNull():
+        return cropped
+    return cropped.scaled(
+        THUMBNAIL_SIZE,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def normalize_thumbnail(data: str) -> str:
+    """Re-encode an already-stored thumbnail to the current square shape and size.
+
+    Meant for a one-time migration of favorites registered before square
+    cropping existed, so the normalized result is saved back into settings
+    rather than recomputed from decode_square_thumbnail() on every display.
+    """
+    if not data:
+        return data
+    return encode_thumbnail(decode_thumbnail(data))
 
 
 def favorite_label(favorite: Favorite) -> str:
@@ -93,27 +148,31 @@ class FavoritesList(QScrollArea):
         self.column.setContentsMargins(0, 0, 0, 0)
         self.column.setSpacing(0)
         self.setWidget(content)
+        # `rows` sizes the list (each row also carries the remove button);
+        # `buttons` keeps just the entry buttons, for row_height().
+        self.rows: list[QWidget] = []
         self.buttons: list[QToolButton] = []
 
-    def add(self, button: QToolButton) -> None:
-        self.column.addWidget(button)
+    def add(self, row: QWidget, button: QToolButton) -> None:
+        self.column.addWidget(row)
+        self.rows.append(row)
         self.buttons.append(button)
 
     def row_height(self) -> int:
         return self.buttons[0].sizeHint().height() if self.buttons else 0
 
     def fit(self, rows: int) -> None:
-        if not self.buttons:
+        if not self.rows:
             return
-        rows = max(1, min(rows, len(self.buttons)))
+        rows = max(1, min(rows, len(self.rows)))
         self.setFixedHeight(rows * self.row_height())
-        width = max(button.sizeHint().width() for button in self.buttons)
-        if rows < len(self.buttons):
+        width = max(row.sizeHint().width() for row in self.rows)
+        if rows < len(self.rows):
             width += self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
         self.setFixedWidth(width)
 
     def fit_within(self, room: int) -> None:
-        if not self.buttons:
+        if not self.rows:
             return
         rows = room // self.row_height()
         self.fit(max(MINIMUM_ENTRIES, min(VISIBLE_ENTRIES, rows)))
@@ -132,6 +191,7 @@ class FavoritesMenu(QMenu):
         self.setStyleSheet(MENU_STYLE)
         self.root: FavoritesMenu | None = None
         self.buttons: list[QToolButton] = []
+        self.remove_buttons: list[QToolButton] = []
         self.entry_index: dict[QToolButton, int] = {}
         self.entry_list: FavoritesList | None = None
         self.group_menus: list[FavoritesMenu] = []
@@ -178,7 +238,7 @@ class FavoritesMenu(QMenu):
         submenu.move_requested.connect(self.move_requested)
         submenu.new_group_requested.connect(self.new_group_requested)
         if members:
-            submenu.setIcon(QIcon(decode_thumbnail(members[0][1].thumbnail)))
+            submenu.setIcon(QIcon(decode_square_thumbnail(members[0][1].thumbnail)))
         self.addMenu(submenu)
         self.group_menus.append(submenu)
 
@@ -188,8 +248,10 @@ class FavoritesMenu(QMenu):
         self.entry_list = FavoritesList()
         for index, favorite in members:
             button = self._make_button(favorite, index)
-            self.entry_list.add(button)
+            row, remove_button = self._make_row(button, index)
+            self.entry_list.add(row, button)
             self.buttons.append(button)
+            self.remove_buttons.append(remove_button)
             self.entry_index[button] = index
         self.entry_list.fit(VISIBLE_ENTRIES)
         action = QWidgetAction(self)
@@ -200,6 +262,7 @@ class FavoritesMenu(QMenu):
     def reset(self) -> None:
         self.clear()  # also destroys the widgets held by the entry actions
         self.buttons.clear()
+        self.remove_buttons.clear()
         self.entry_index.clear()
         self.entry_list = None
         self.entry_action = None
@@ -234,7 +297,7 @@ class FavoritesMenu(QMenu):
         button = QToolButton()
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         button.setIconSize(THUMBNAIL_SIZE)
-        button.setIcon(QIcon(decode_thumbnail(favorite.thumbnail)))
+        button.setIcon(QIcon(decode_square_thumbnail(favorite.thumbnail)))
         button.setText(favorite_label(favorite))
         button.setToolTip(f"{favorite.path or favorite.folder}\n{tr('右クリックで解除・フォルダ分け')}")
         button.setAutoRaise(True)
@@ -243,9 +306,32 @@ class FavoritesMenu(QMenu):
         button.clicked.connect(lambda _checked=False: self.choose(index))
         return button
 
+    def _make_row(self, button: QToolButton, index: int) -> tuple[QWidget, QToolButton]:
+        """Pair an entry button with a visible remove button, side by side."""
+        remove = QToolButton()
+        remove.setText("×")
+        remove.setToolTip(tr("お気に入りから解除"))
+        remove.setAutoRaise(True)
+        remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove.setStyleSheet(REMOVE_STYLE)
+        remove.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        remove.clicked.connect(lambda _checked=False: self.remove(index))
+
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(button)
+        layout.addWidget(remove)
+        return row, remove
+
     def choose(self, index: int) -> None:
         self.close_chain()
         self.report(lambda: self.activated.emit(index))
+
+    def remove(self, index: int) -> None:
+        self.close_chain()
+        self.report(lambda: self.remove_requested.emit(index))
 
     def close_chain(self) -> None:
         self.close()

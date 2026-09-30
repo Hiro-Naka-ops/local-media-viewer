@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+import uuid
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,10 @@ from typing import Any
 class Favorite:
     """A bookmarked folder with the thumbnail captured when it was registered."""
 
+    # Stable across reorders and renames; the Mac widget refers to a favorite
+    # by this rather than its position in the list. Older files may lack one
+    # (backfilled by favorites_from_data).
+    id: str = ""
     folder: str = ""
     name: str = ""
     path: str = ""
@@ -62,11 +67,13 @@ def settings_path() -> Path:
     return base / "LocalMediaViewer" / "settings.json"
 
 
-def favorites_from_data(values: Any) -> list[Favorite]:
+def favorites_from_data(values: Any) -> tuple[list[Favorite], bool]:
+    """Returns the favorites, and whether any of them got a backfilled id."""
     if not isinstance(values, list):
-        return []
+        return [], False
     allowed = Favorite.__dataclass_fields__.keys()
     favorites: list[Favorite] = []
+    backfilled = False
     for item in values:
         if not isinstance(item, dict):
             continue
@@ -74,8 +81,14 @@ def favorites_from_data(values: Any) -> list[Favorite]:
             **{key: item[key] for key in allowed if isinstance(item.get(key), str)}
         )
         if favorite.folder:
+            if not favorite.id:
+                # A favorite saved before ids existed, or written by an older
+                # copy of the app. Generated once and persisted by
+                # load_settings so it stays the same on every later run.
+                favorite = replace(favorite, id=uuid.uuid4().hex)
+                backfilled = True
             favorites.append(favorite)
-    return favorites
+    return favorites, backfilled
 
 
 def load_settings(path: Path | None = None) -> ViewerSettings:
@@ -84,8 +97,14 @@ def load_settings(path: Path | None = None) -> ViewerSettings:
         data = json.loads(target.read_text(encoding="utf-8"))
         allowed = ViewerSettings.__dataclass_fields__.keys()
         values = {key: data[key] for key in allowed if key in data}
-        values["favorites"] = favorites_from_data(values.get("favorites"))
-        return ViewerSettings(**values)
+        favorites, backfilled = favorites_from_data(values.get("favorites"))
+        values["favorites"] = favorites
+        settings = ViewerSettings(**values)
+        if backfilled:
+            # Write the generated ids back now so they are stable from here on,
+            # rather than re-rolling new ones every time the file is loaded.
+            save_settings(settings, target)
+        return settings
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
         return ViewerSettings()
 
