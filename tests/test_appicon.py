@@ -100,15 +100,65 @@ def test_the_mikan_stands_on_the_m_and_the_pair_is_centred() -> None:
         colour = image.pixelColor(x, y)
         return colour.red() > 250 and colour.green() > 250 and colour.blue() > 250
 
-    def lowest_white(x: float) -> int:
+    def yellow(x: int, y: int) -> bool:
+        colour = image.pixelColor(x, y)
+        return colour.red() > 245 and colour.green() > 215 and colour.blue() < 60
+
+    def lowest(x: float, match) -> int:
         column = round(x * scale)
-        return max(y for y in range(size) if white(column, y))
+        return max(y for y in range(size) if match(column, y))
 
     left_leg = 128 - 78 * layout.M_SCALE + layout.SHIFT_X
     mikan = layout.MIKAN_X + layout.SHIFT_X
     # The fruit's bottom sits on the M's baseline, as the user asked.
-    assert abs(lowest_white(mikan) - lowest_white(left_leg)) <= 1
+    assert abs(lowest(mikan, yellow) - lowest(left_leg, white)) <= 1
 
-    # The M and the fruit together sit in the middle of the tile.
-    columns = [x for x in range(size) if any(white(x, y) for y in range(0, size, 2))]
+    # The M and the fruit together sit in the middle of the tile. Only fully
+    # opaque pixels count: the tile's softened corners are not part of it.
+    def mark(x: int, y: int) -> bool:
+        return image.pixelColor(x, y).alpha() == 255 and (white(x, y) or yellow(x, y))
+
+    columns = [x for x in range(size) if any(mark(x, y) for y in range(0, size, 2))]
     assert abs(columns[0] - (size - 1 - columns[-1])) <= 2
+
+
+def test_the_right_foot_of_the_m_stays_hidden_behind_the_mikan() -> None:
+    layout = icon_layout()
+    size = 512
+    image = rendered_icon(size)
+    scale = size / 256
+    foot = (layout.M_RIGHT_FOOT.x() + layout.SHIFT_X) * scale
+    # The M's right half is 62% white on amber. None of it may show from the
+    # fruit's middle down: a sliver there looked like a stray stub of the leg.
+    showing = [
+        (x, y)
+        for x in range(round(foot - 16), round(foot + 16))
+        for y in range(round(layout.MIKAN_Y * scale), round((layout.M_BOTTOM + 2) * scale))
+        if (colour := image.pixelColor(x, y)).red() > 245
+        and 200 < colour.green() < 225
+        and 150 < colour.blue() < 185
+    ]
+    assert showing == []
+
+
+def test_the_reusable_mikan_files_match_their_source() -> None:
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    try:
+        import mikan
+    finally:
+        sys.path.remove(str(root / "scripts"))
+    # scripts/mikan.py writes assets/mikan/; a hand edit to either would split them.
+    folder = root / "assets" / "mikan"
+    assert (folder / "mikan.svg").read_text(encoding="utf-8") == mikan.standalone_svg()
+    assert (folder / "mikan-mono.svg").read_text(encoding="utf-8") == mikan.standalone_svg(
+        "currentColor"
+    )
+    # The icon draws the same fruit in the same colour.
+    from local_media_viewer.appicon import ICON_SVG
+
+    assert mikan.shapes() in ICON_SVG
+    assert mikan.YELLOW in ICON_SVG
