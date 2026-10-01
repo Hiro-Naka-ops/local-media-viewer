@@ -262,11 +262,15 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
 
         panels, drawing, spread = window.option_groups
         view = sections(window.view_menu)
-        # Display size, the panels, how the picture is drawn, and the language
-        # closing the menu, each ruled off from the next. Full screen is a
-        # window matter.
+        # Display size and rotation, the panels, how the picture is drawn, and
+        # the language closing the menu, each ruled off from the next. Full
+        # screen is a window matter.
         assert view == [
-            [window.size_menu.menuAction()],
+            [
+                window.size_menu.menuAction(),
+                window.orientation_menu.menuAction(),
+                window.ocr_action,
+            ],
             panels,
             drawing,
             [window.language_menu.menuAction()],
@@ -279,12 +283,18 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
             "1ページ目を表紙として単独表示",
             "見開きページをずらす",
         ]
-        # What is left on the toolbar is paging and the per-picture clean-up
-        # (the video controls are hidden until a video is open).
+        # What is left on the toolbar is paging, the per-picture clean-up and
+        # the slideshow button (the video controls are hidden until a video
+        # is open).
         shown = [
             a for a in window.toolbar.actions() if a.isVisible() and not a.isSeparator()
         ]
-        assert shown == [window.previous_action, window.next_action, window.enhance_action]
+        assert shown == [
+            window.previous_action,
+            window.next_action,
+            window.enhance_action,
+            window.slideshow_button_action,
+        ]
     finally:
         window.close()
 

@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QPainter,
     QPixmap,
     QResizeEvent,
+    QTransform,
     QWheelEvent,
 )
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -290,6 +291,16 @@ class ImageView(QGraphicsView):
         self.fit_kind = FIT_WINDOW
         self.display_scale = 1.0
         self.source_pixmap = QPixmap()
+        # Display-only orientation: mirrored left-right first (if mirrored),
+        # then turned clockwise by rotation (0, 90, 180 or 270). These two
+        # cover every mix of turns and flips, so presses in any order compose
+        # without a growing history. source_pixmap holds the turned picture,
+        # so fitting, panning and resampling all work on what is on screen
+        # with no cases of their own; the picture as handed in is kept to turn
+        # again.
+        self.rotation = 0
+        self.mirrored = False
+        self.unrotated_pixmap = QPixmap()
         self.scaled_cache: OrderedDict[tuple[int, int, int], tuple[QPixmap, int]] = (
             OrderedDict()
         )
@@ -307,6 +318,13 @@ class ImageView(QGraphicsView):
 
         None leaves the scroll bars where the previous picture had them.
         """
+        self.unrotated_pixmap = pixmap
+        if (self.rotation or self.mirrored) and not pixmap.isNull():
+            # QTransform applies the call made last first: mirror, then turn.
+            transform = QTransform().rotate(self.rotation)
+            if self.mirrored:
+                transform.scale(-1, 1)
+            pixmap = pixmap.transformed(transform)
         self.source_pixmap = pixmap
         if self.fit_mode:
             self.fit_to_window()
@@ -314,6 +332,36 @@ class ImageView(QGraphicsView):
             self.render_at_scale(self.display_scale)
         if pan is not None:
             self.set_pan_fraction(*pan)
+
+    def set_orientation(self, rotation: int, mirrored: bool) -> None:
+        """Turn or flip the picture on screen; the file itself is never touched.
+
+        The picture may change shape, so the old scroll position means nothing
+        on it: it starts again from the top.
+        """
+        rotation %= 360
+        if (rotation, mirrored) == (self.rotation, self.mirrored):
+            return
+        self.rotation = rotation
+        self.mirrored = mirrored
+        if not self.unrotated_pixmap.isNull():
+            self.set_pixmap(self.unrotated_pixmap, PAN_TOP_CENTRE)
+
+    def rotate(self, degrees: int) -> None:
+        self.set_orientation(self.rotation + degrees, self.mirrored)
+
+    def flip_horizontal(self) -> None:
+        # Mirroring after a turn equals mirroring first and turning the other way.
+        self.set_orientation(-self.rotation, not self.mirrored)
+
+    def flip_vertical(self) -> None:
+        # An upside-down flip is a left-right flip turned half way round.
+        self.set_orientation(180 - self.rotation, not self.mirrored)
+
+    def reset_orientation(self) -> None:
+        """Forget the turn without redrawing: the next set_pixmap shows it upright."""
+        self.rotation = 0
+        self.mirrored = False
 
     def pan_fraction(self) -> tuple[float | None, float | None]:
         """How far along each scroll bar the view is, from 0 to 1.

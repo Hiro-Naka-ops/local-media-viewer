@@ -57,6 +57,17 @@ class ViewerSettings:
     always_on_top: bool = False
     # "window", "width" or "height": what Space and a click fit the picture to.
     fit_kind: str = "window"
+    # Seconds each page stays up during a slideshow. Whether one is running is
+    # deliberately not saved.
+    slideshow_seconds: int = 5
+    # How one page gives way to the next in a slideshow (a transition.py key),
+    # and how long that takes in milliseconds.
+    slideshow_effect: str = "fade"
+    slideshow_effect_ms: int = 600
+    # Start again from the first page after the last / show pages in a
+    # shuffled order.
+    slideshow_loop: bool = False
+    slideshow_random: bool = False
     favorites: list[Favorite] = field(default_factory=list)
 
 

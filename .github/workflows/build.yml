@@ -17,8 +17,9 @@ on:
         default: ""
 
 env:
-  PYTHON_VERSION: "3.13"
-  # Keep in step with pyproject.toml and scripts/build_mac.sh.
+  PYTHON_VERSION: "3.14"
+  # Keep in step with pyproject.toml and scripts/build_mac.sh. The Windows-only
+  # packages (OCR) are in scripts/requirements-windows.txt.
   REQUIREMENTS: Pillow==12.1.1 pillow-heif==1.8.0 PySide6==6.10.2
 
 jobs:
@@ -54,7 +55,9 @@ jobs:
 
       - name: Install
         shell: bash  # word-splits $REQUIREMENTS into one argument per package
-        run: python -m pip install $REQUIREMENTS pytest==9.0.2 pyinstaller==6.19.0
+        run: |
+          python -m pip install $REQUIREMENTS pytest==9.0.2 pyinstaller==6.19.0
+          python -m pip install -r scripts/requirements-windows.txt
 
       - name: Test
         # Windows is the main platform, so a failure here stops the release.

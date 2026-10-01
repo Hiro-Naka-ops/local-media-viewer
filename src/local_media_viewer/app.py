@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sys
 import uuid
 from collections import OrderedDict
@@ -59,7 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from local_media_viewer import i18n
+from local_media_viewer import i18n, ocr, transition
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
@@ -138,6 +139,14 @@ BRIGHTNESS_RANGE = (-30, 30)
 CONTRAST_RANGE = (-30, 30)
 GAMMA_RANGE = (70, 130)
 HUE_RANGE = (-30, 30)
+# Seconds a page stays up in a slideshow: the choices in its menu, and how
+# far "pick a number" may go.
+SLIDESHOW_SECONDS = (1, 2, 3, 5, 10, 15, 30, 60)
+SLIDESHOW_LIMIT = 3600
+# Switched off for now: the user found the recognition too unreliable to offer
+# (2026-10-01). The code and its tests stay; this hides the menu entries and
+# the key. Set to True to bring it back.
+OCR_ENABLED = False
 
 # Qt's own strings (the Yes/No buttons, the colour dialog) come from these.
 QT_TRANSLATIONS = {"ja": "qtbase_ja", "zh": "qtbase_zh_CN", "ko": "qtbase_ko"}
@@ -278,6 +287,14 @@ class MainWindow(QMainWindow):
         # left alone by showMessage, so the page count and the passing
         # notifications never overwrite the dates.
         # Added first, so it sits to the left of the dates it describes.
+        # Leftmost of the permanent widgets, and shown only while a slideshow
+        # runs: what says the pages are turning by themselves, and the place
+        # to click to make them stop.
+        self.slideshow_label = ClickableLabel()
+        self.slideshow_label.setStyleSheet("font-weight: bold; padding-right: 12px;")
+        self.slideshow_label.clicked.connect(lambda: self.slideshow_action.setChecked(False))
+        self.slideshow_label.hide()
+        self.statusBar().addPermanentWidget(self.slideshow_label)
         self.sort_icon_label = ClickableLabel()
         self.sort_icon_label.setStyleSheet("padding-right: 8px;")
         self.sort_icon_label.clicked.connect(self.show_sort_popup)
@@ -336,6 +353,22 @@ class MainWindow(QMainWindow):
         self.enhancer = Enhancer()
         self.enhancer.ready.connect(self.show_enhanced)
         self.enhance_generation = 0
+        # Display-only turns and flips, also per picture: they reset on the
+        # next page (show_current), so a sideways photo never turns the rest
+        # of the folder.
+        self.rotation_path: Path | None = None
+        self.orientation_menu = self.create_orientation_menu()
+        # Reads the picture as it is on screen, on request only. Hidden where
+        # the system has no OCR to offer (macOS, or no OCR language installed).
+        self.ocr_action = QAction(self)
+        self.ocr_action.setShortcut(QKeySequence("Ctrl+T"))
+        self.ocr_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        # An invisible action's key does not fire either, so this hides Ctrl+T too.
+        self.ocr_action.setVisible(self.ocr_offered())
+        self.ocr_action.triggered.connect(self.read_text)
+        self.ocr_reader = ocr.Reader()
+        self.ocr_reader.ready.connect(self.show_read_text)
+        self.ocr_dialog: ocr.TextDialog | None = None
         self.create_page_actions()
         self.size_menu = self.create_size_menu()
         # Only offered from the right-click menu, which is the one menu left
@@ -395,7 +428,11 @@ class MainWindow(QMainWindow):
                 self.first_page_action,
                 self.last_page_action,
                 self.go_to_page_action,
+                self.slideshow_action,
                 self.fit_action,
+                self.rotate_right_action,
+                self.rotate_left_action,
+                self.ocr_action,
                 self.open_file_action,
                 self.open_folder_action,
             ]
@@ -406,6 +443,7 @@ class MainWindow(QMainWindow):
         self.toolbar.addActions([self.previous_action, self.next_action])
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.enhance_action)
+        self.toolbar.addAction(self.slideshow_button_action)
         # Hidden through the QActions addWidget/addSeparator hand back: a
         # toolbar re-shows a widget it holds whenever it lays itself out, so
         # hiding the QSlider itself does not stick.
@@ -577,6 +615,15 @@ class MainWindow(QMainWindow):
         self.enhance_action.setToolTip(
             tr("この画像のブロックノイズを消して解像度を上げる（表示のみ・元ファイルは変更しない）")
         )
+        self.ocr_action.setText(tr("文字を読み取る（OCR）"))
+        if self.ocr_dialog is not None:
+            self.ocr_dialog.retranslate()
+        self.orientation_menu.setTitle(tr("回転・反転"))
+        self.rotate_right_action.setText(tr("右に90°回転"))
+        self.rotate_left_action.setText(tr("左に90°回転"))
+        self.rotate_half_action.setText(tr("180°回転"))
+        self.flip_horizontal_action.setText(tr("左右反転"))
+        self.flip_vertical_action.setText(tr("上下反転"))
         self.size_menu.setTitle(tr("表示サイズ"))
         for key, label in SIZE_LABELS:
             self.size_actions[key].setText(tr(label))
@@ -587,6 +634,20 @@ class MainWindow(QMainWindow):
         self.first_page_action.setText(tr("最初のページ"))
         self.last_page_action.setText(tr("最後のページ"))
         self.go_to_page_action.setText(tr("ページを指定…"))
+        self.slideshow_action.setText(tr("スライドショー"))
+        self.show_slideshow_state()
+        self.slideshow_settings_menu.setTitle(tr("スライドショーの設定"))
+        self.slideshow_loop_action.setText(tr("最後まで行ったら最初に戻る"))
+        self.slideshow_random_action.setText(tr("ランダム再生"))
+        self.slideshow_menu.setTitle(tr("間隔"))
+        for seconds, action in self.slideshow_interval_actions.items():
+            action.setText(tr("{seconds}秒", seconds=seconds))
+        self.show_slideshow_interval()
+        self.transition_menu.setTitle(tr("切り替え効果"))
+        for key, label in transition.TRANSITION_LABELS:
+            self.transition_actions[key].setText(tr(label))
+        for milliseconds, label in transition.SPEED_LABELS:
+            self.transition_speed_actions[milliseconds].setText(tr(label))
         self.filter_action.setToolTip(f"{tr('フィルター')} (F)")
         self.filmstrip_action.setText(tr("フィルムストリップ"))
         self.toolbar_action.setText(tr("ツールバー"))
@@ -929,6 +990,8 @@ class MainWindow(QMainWindow):
         resuming = self.initializing and folder == self.resumed_folder()
         self.current_folder = folder
         self.spread_probe_cache.clear()
+        # The deck is of the folder left behind.
+        self.slideshow_deck = None
         if not resuming:
             self.spread_anchor = self.default_spread_anchor()
 
@@ -1015,10 +1078,20 @@ class MainWindow(QMainWindow):
         pages = self.spread_pages()
         self.index = pages[0]
         path = self.files[self.index]
+        # A reading still under way is of the page being left.
+        self.ocr_reader.cancel()
+        # Whatever shows this page, a change still playing over the view is of
+        # an older one. The slideshow starts its own after the page is up.
+        self.transition_overlay.cancel()
         # A new page starts from the file as it is; the clean-up is per picture.
         self.enhancer.cancel()
         self.enhance_action.setChecked(False)
         self.enhance_generation = 0
+        # Kept while the same page is only redrawn (a filter switched on, the
+        # enhancement switched off), dropped as soon as another page shows.
+        if path != self.rotation_path:
+            self.rotation_path = None
+            self.image_view.reset_orientation()
         self.filmstrip.set_files(self.files)
         self.filmstrip.set_current(self.index)
         self.stop_current()
@@ -1059,8 +1132,81 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as error:
                 QMessageBox.warning(self, tr("画像を開けません"), f"{path.name}\n{error}")
         self.enhance_action.setEnabled(self.can_enhance())
+        self.orientation_menu.setEnabled(self.can_rotate())
+        self.ocr_action.setEnabled(self.can_rotate())
         self.show_page_status()
         self.preload_nearby_images()
+        self.restart_slideshow_timer()
+
+    def can_rotate(self) -> bool:
+        """A picture is on screen: a still, an animation or a spread, not a video."""
+        return (
+            self.stack.currentWidget() is self.image_view
+            and not self.image_view.source_pixmap.isNull()
+        )
+
+    def ocr_offered(self) -> bool:
+        return OCR_ENABLED and ocr.available()
+
+    def read_text(self) -> None:
+        """OCR the picture exactly as shown: turned, enhanced, a spread and all."""
+        if not self.ocr_offered() or not self.can_rotate():
+            return
+        # What is on screen rather than the file: a sideways scan turned
+        # upright reads, and a spread reads as its two pages.
+        image = self.image_view.source_pixmap.toImage()
+        self.ocr_reader.request(image)
+        self.statusBar().showMessage(tr("文字を読み取っています…"))
+
+    def show_read_text(self, generation: int, text: str | None) -> None:
+        # Against the reader's own count, which show_current's cancel() bumps:
+        # a result already queued when the page was turned belongs to the old page.
+        if generation != self.ocr_reader.generation:
+            return
+        if text is None:
+            self.statusBar().showMessage(tr("文字を読み取れませんでした"), 5000)
+            return
+        if not text.strip():
+            self.statusBar().showMessage(tr("文字が見つかりませんでした"), 5000)
+            return
+        if self.ocr_dialog is None:
+            self.ocr_dialog = ocr.TextDialog(self)
+        names = " / ".join(self.files[page].name for page in self.displayed_pages or [self.index])
+        self.ocr_dialog.show_text(names, text)
+        self.statusBar().showMessage(
+            tr("{count}行を読み取りました", count=text.count("\n") + 1), 4000
+        )
+
+    def create_orientation_menu(self) -> QMenu:
+        """回転・反転: turns and flips of the picture on screen."""
+        menu = QMenu(self)
+        view = self.image_view
+        self.rotate_right_action = QAction(self)
+        self.rotate_right_action.setShortcut(QKeySequence("Ctrl+R"))
+        self.rotate_right_action.triggered.connect(lambda: self.turn_view(view.rotate, 90))
+        self.rotate_left_action = QAction(self)
+        self.rotate_left_action.setShortcut(QKeySequence("Ctrl+L"))
+        self.rotate_left_action.triggered.connect(lambda: self.turn_view(view.rotate, -90))
+        self.rotate_half_action = QAction(self)
+        self.rotate_half_action.triggered.connect(lambda: self.turn_view(view.rotate, 180))
+        self.flip_horizontal_action = QAction(self)
+        self.flip_horizontal_action.triggered.connect(
+            lambda: self.turn_view(view.flip_horizontal)
+        )
+        self.flip_vertical_action = QAction(self)
+        self.flip_vertical_action.triggered.connect(lambda: self.turn_view(view.flip_vertical))
+        menu.addActions(
+            [self.rotate_right_action, self.rotate_left_action, self.rotate_half_action]
+        )
+        menu.addSeparator()
+        menu.addActions([self.flip_horizontal_action, self.flip_vertical_action])
+        return menu
+
+    def turn_view(self, change, *args: int) -> None:
+        if not self.can_rotate():
+            return
+        self.rotation_path = self.files[self.index]
+        change(*args)
 
     def can_enhance(self) -> bool:
         """A single still picture: not a video, an animation or a spread.
@@ -1222,6 +1368,275 @@ class MainWindow(QMainWindow):
         self.go_to_page_action.triggered.connect(self.ask_page_number)
         for action in (self.first_page_action, self.last_page_action, self.go_to_page_action):
             action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.create_slideshow_actions()
+
+    def create_slideshow_actions(self) -> None:
+        """スライドショー: turn the page by itself every few seconds."""
+        # Never remembered between runs: a viewer that starts turning pages by
+        # itself on launch would be a surprise. Only the interval is saved.
+        self.slideshow_action = QAction(self)
+        self.slideshow_action.setCheckable(True)
+        self.slideshow_action.setShortcut(QKeySequence(Qt.Key.Key_F5))
+        self.slideshow_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.slideshow_action.toggled.connect(self.toggle_slideshow)
+        # Single shot, restarted by show_current: a page turned by hand gets
+        # its full time too, instead of whatever was left of the last one.
+        self.slideshow_timer = QTimer(self)
+        self.slideshow_timer.setSingleShot(True)
+        self.slideshow_timer.timeout.connect(self.advance_slideshow)
+        self.slideshow_video_waited = False
+        # The toolbar's own button rather than slideshow_action again: a
+        # button can say what pressing it does now ("stop"), which a ticked
+        # menu entry sharing its words could not.
+        self.slideshow_button_action = QAction(self)
+        self.slideshow_button_action.triggered.connect(self.slideshow_action.toggle)
+        self.slideshow_loop_action = QAction(self)
+        self.slideshow_loop_action.setCheckable(True)
+        self.slideshow_loop_action.setChecked(self.settings.slideshow_loop is True)
+        self.slideshow_loop_action.toggled.connect(lambda _checked: self.persist_settings())
+        self.slideshow_random_action = QAction(self)
+        self.slideshow_random_action.setCheckable(True)
+        self.slideshow_random_action.setChecked(self.settings.slideshow_random is True)
+        self.slideshow_random_action.toggled.connect(self.change_slideshow_random)
+        # Pages still to come in a shuffled slideshow; None until first needed.
+        self.slideshow_deck: list[Path] | None = None
+        saved = self.settings.slideshow_seconds
+        # A hand-edited or damaged settings file must not make a zero-second loop.
+        valid = type(saved) is int and 1 <= saved <= SLIDESHOW_LIMIT
+        self.slideshow_seconds = saved if valid else 5
+        self.slideshow_menu = QMenu(self)
+        self.slideshow_interval_actions: dict[int, QAction] = {}
+        self.slideshow_choices = QActionGroup(self)
+        self.slideshow_choices.setExclusive(True)
+        for seconds in SLIDESHOW_SECONDS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(seconds == self.slideshow_seconds)
+            action.triggered.connect(
+                lambda _checked=False, value=seconds: self.choose_slideshow_seconds(value)
+            )
+            self.slideshow_choices.addAction(action)
+            self.slideshow_menu.addAction(action)
+            self.slideshow_interval_actions[seconds] = action
+        self.slideshow_menu.addSeparator()
+        self.slideshow_custom_action = QAction(self)
+        self.slideshow_custom_action.setCheckable(True)
+        self.slideshow_custom_action.triggered.connect(self.ask_slideshow_seconds)
+        self.slideshow_choices.addAction(self.slideshow_custom_action)
+        self.slideshow_menu.addAction(self.slideshow_custom_action)
+        self.create_transition_menu()
+        # One entry in the menus for everything that is set once and left.
+        self.slideshow_settings_menu = QMenu(self)
+        self.slideshow_settings_menu.addActions(
+            [self.slideshow_loop_action, self.slideshow_random_action]
+        )
+        self.slideshow_settings_menu.addSeparator()
+        self.slideshow_settings_menu.addMenu(self.slideshow_menu)
+        self.slideshow_settings_menu.addMenu(self.transition_menu)
+
+    def change_slideshow_random(self, _enabled: bool) -> None:
+        self.slideshow_deck = None
+        self.persist_settings()
+
+    def show_slideshow_state(self) -> None:
+        """Say on the toolbar and the status bar whether a slideshow is running."""
+        running = self.slideshow_action.isChecked()
+        self.slideshow_button_action.setText(
+            tr("■ スライドショーを停止") if running else tr("▶ スライドショー")
+        )
+        self.slideshow_button_action.setToolTip(f"{tr('スライドショー')} (F5)")
+        self.slideshow_label.setText(
+            tr("▶ スライドショー中（{seconds}秒ごと）", seconds=self.slideshow_seconds)
+        )
+        self.slideshow_label.setToolTip(tr("クリックでスライドショーを停止"))
+        self.slideshow_label.setVisible(running)
+
+    def create_transition_menu(self) -> None:
+        """スライドショーの切り替え効果: how a page gives way, and how fast."""
+        effect = self.settings.slideshow_effect
+        self.slideshow_effect = effect if effect in transition.TRANSITIONS else transition.FADE
+        duration = self.settings.slideshow_effect_ms
+        self.slideshow_effect_ms = duration if duration in transition.SPEEDS else 600
+        self.transition_overlay = transition.TransitionOverlay(self.image_view)
+        self.transition_menu = QMenu(self)
+        self.transition_actions: dict[str, QAction] = {}
+        self.transition_speed_actions: dict[int, QAction] = {}
+        self.transition_choices = QActionGroup(self)
+        self.transition_choices.setExclusive(True)
+        for key, _label in transition.TRANSITION_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(key == self.slideshow_effect)
+            action.triggered.connect(
+                lambda _checked=False, name=key: self.choose_transition(name)
+            )
+            self.transition_choices.addAction(action)
+            self.transition_menu.addAction(action)
+            self.transition_actions[key] = action
+        self.transition_menu.addSeparator()
+        self.transition_speed_choices = QActionGroup(self)
+        self.transition_speed_choices.setExclusive(True)
+        for milliseconds, _label in transition.SPEED_LABELS:
+            action = QAction(self)
+            action.setCheckable(True)
+            action.setChecked(milliseconds == self.slideshow_effect_ms)
+            action.triggered.connect(
+                lambda _checked=False, value=milliseconds: self.choose_transition_speed(value)
+            )
+            self.transition_speed_choices.addAction(action)
+            self.transition_menu.addAction(action)
+            self.transition_speed_actions[milliseconds] = action
+
+    def choose_transition(self, name: str) -> None:
+        self.slideshow_effect = name
+        self.persist_settings()
+
+    def choose_transition_speed(self, milliseconds: int) -> None:
+        self.slideshow_effect_ms = milliseconds
+        self.persist_settings()
+
+    def show_slideshow_interval(self) -> None:
+        """Tick the interval in use; a hand-picked one shows its number."""
+        custom = self.slideshow_seconds not in SLIDESHOW_SECONDS
+        for seconds, action in self.slideshow_interval_actions.items():
+            action.setChecked(seconds == self.slideshow_seconds)
+        self.slideshow_custom_action.setChecked(custom)
+        self.slideshow_custom_action.setText(
+            tr("秒数を指定…（{seconds}秒）", seconds=self.slideshow_seconds)
+            if custom
+            else tr("秒数を指定…")
+        )
+
+    def ask_slideshow_seconds(self) -> None:
+        seconds, accepted = QInputDialog.getInt(
+            self,
+            tr("スライドショーの間隔"),
+            tr("1ページを表示する秒数（1〜{limit}）:", limit=SLIDESHOW_LIMIT),
+            self.slideshow_seconds,
+            1,
+            SLIDESHOW_LIMIT,
+        )
+        if accepted:
+            self.choose_slideshow_seconds(seconds)
+        else:
+            # Clicking the entry ticked it; put the tick back where it belongs.
+            self.show_slideshow_interval()
+
+    def toggle_slideshow(self, enabled: bool) -> None:
+        self.show_slideshow_state()
+        if not enabled:
+            self.slideshow_timer.stop()
+            self.statusBar().showMessage(tr("スライドショーを停止しました"), 3000)
+            return
+        if not self.files:
+            self.slideshow_action.setChecked(False)
+            return
+        # Each run deals afresh, so starting again never resumes a stale order.
+        self.slideshow_deck = None
+        self.restart_slideshow_timer()
+        self.statusBar().showMessage(
+            tr("スライドショーを開始しました（{seconds}秒ごと）", seconds=self.slideshow_seconds),
+            3000,
+        )
+
+    def choose_slideshow_seconds(self, seconds: int) -> None:
+        self.slideshow_seconds = seconds
+        self.show_slideshow_interval()
+        self.show_slideshow_state()
+        self.persist_settings()
+        self.restart_slideshow_timer()
+
+    def restart_slideshow_timer(self) -> None:
+        """Give the page on screen its full time, if a slideshow is running."""
+        self.slideshow_video_waited = False
+        if self.slideshow_action.isChecked():
+            self.slideshow_timer.start(self.slideshow_seconds * 1000)
+
+    def slideshow_blocked(self) -> bool:
+        """A dialog or a menu is open: turning the page under it would pull the
+        picture away from what the user is in the middle of choosing for it."""
+        return (
+            QApplication.activeModalWidget() is not None
+            or QApplication.activePopupWidget() is not None
+        )
+
+    def next_slideshow_index(self) -> int | None:
+        """The page a running slideshow shows next, or None when it is over."""
+        shown = self.displayed_pages or [self.index]
+        loop = self.slideshow_loop_action.isChecked()
+        if not self.slideshow_random_action.isChecked():
+            target = shown[-1] + 1
+            if target < len(self.files):
+                return target
+            return 0 if loop else None
+        # A shuffled deck, not a fresh roll of the dice each time: every page
+        # comes up once before any comes up twice, and "all shown" has a meaning.
+        # Paths rather than indexes, which a change of sort order would shift.
+        current = {self.files[page] for page in shown}
+        positions = {path: index for index, path in enumerate(self.files)}
+        if self.slideshow_deck is None:
+            self.slideshow_deck = self.dealt_deck(current)
+        for _deal in range(2):
+            while self.slideshow_deck:
+                path = self.slideshow_deck.pop()
+                if path in positions and path not in current:
+                    return positions[path]
+            if not loop:
+                return None
+            self.slideshow_deck = self.dealt_deck(current)
+        # Looping with nothing else in the folder: stay on the page.
+        return shown[0]
+
+    def dealt_deck(self, current: set[Path]) -> list[Path]:
+        deck = [path for path in self.files if path not in current]
+        random.shuffle(deck)
+        return deck
+
+    def advance_slideshow(self) -> None:
+        if not self.slideshow_action.isChecked():
+            return
+        if self.slideshow_blocked():
+            self.slideshow_timer.start(self.slideshow_seconds * 1000)
+            return
+        if self.stack.currentWidget() is self.video_view and not self.slideshow_video_waited:
+            # A video plays through once before moving on, however short the
+            # interval. Only once: it loops, so "until it ends" has no end.
+            remaining = self.player.duration() - self.player.position()
+            if remaining > 0:
+                self.slideshow_video_waited = True
+                self.slideshow_timer.start(remaining)
+                return
+        # Not navigate(): past the last page that asks about the next folder,
+        # and a question popping up unattended is not a way to end a slideshow.
+        target = self.next_slideshow_index()
+        if target is None:
+            self.slideshow_action.setChecked(False)
+            self.statusBar().showMessage(
+                tr("すべてのページを表示したので、スライドショーを終了しました")
+                if self.slideshow_random_action.isChecked()
+                else tr("最後のページまで表示したので、スライドショーを終了しました"),
+                5000,
+            )
+            return
+        # Only between two pictures: a video is drawn by the player, which a
+        # photograph of the view does not capture.
+        animated = (
+            self.slideshow_effect != transition.NONE
+            and self.stack.currentWidget() is self.image_view
+        )
+        before = self.image_view.grab() if animated else None
+        self.index = target
+        self.show_current()
+        if self.slideshow_deck:
+            # A spread shows the drawn page's partner too; it has had its turn.
+            together = {self.files[page] for page in self.displayed_pages}
+            self.slideshow_deck = [path for path in self.slideshow_deck if path not in together]
+        if before is not None and self.stack.currentWidget() is self.image_view:
+            self.transition_overlay.play(
+                self.slideshow_effect, self.slideshow_effect_ms, before, self.image_view.grab()
+            )
+            # The change is not part of the page's own time on screen.
+            self.slideshow_timer.start(self.slideshow_seconds * 1000 + self.slideshow_effect_ms)
 
     def go_to_index(self, index: int) -> None:
         # show_current settles a spread onto the pair holding this page.
@@ -1308,6 +1723,8 @@ class MainWindow(QMainWindow):
         panels, drawing, spread = self.option_groups
         self.view_menu = bar.addMenu("")
         self.view_menu.addMenu(self.size_menu)
+        self.view_menu.addMenu(self.orientation_menu)
+        self.view_menu.addAction(self.ocr_action)
         for group in (panels, drawing):
             self.view_menu.addSeparator()
             self.view_menu.addActions(group)
@@ -1322,6 +1739,9 @@ class MainWindow(QMainWindow):
         self.go_menu.addActions([self.first_page_action, self.last_page_action])
         self.go_menu.addSeparator()
         self.go_menu.addAction(self.go_to_page_action)
+        self.go_menu.addSeparator()
+        self.go_menu.addAction(self.slideshow_action)
+        self.go_menu.addMenu(self.slideshow_settings_menu)
 
         self.spread_menu = bar.addMenu("")
         self.spread_menu.addActions(spread)
@@ -1492,9 +1912,18 @@ class MainWindow(QMainWindow):
         # back out as well as fitting, which is otherwise only on the toolbar.
         self.fullscreen_action.setChecked(self.isFullScreen())
         self.show_size_state()
-        viewing = [self.size_menu.menuAction(), self.fullscreen_action]
+        # The slideshow's settings come along: in full screen, where a
+        # slideshow is mostly watched, this is the only menu there is.
+        viewing = [
+            self.size_menu.menuAction(),
+            self.fullscreen_action,
+            self.slideshow_action,
+            self.slideshow_settings_menu.menuAction(),
+        ]
         if self.stack.currentWidget() is self.image_view:
-            viewing.append(self.enhance_action)
+            viewing.extend(
+                [self.orientation_menu.menuAction(), self.enhance_action, self.ocr_action]
+            )
         menu.addActions(viewing)
         if self.stack.currentWidget() is self.video_view:
             # The toolbar is hidden in full screen, so playback is offered here too.
@@ -1793,6 +2222,11 @@ class MainWindow(QMainWindow):
             language=self.language_choice,
             always_on_top=self.always_on_top_action.isChecked(),
             fit_kind=self.image_view.fit_kind,
+            slideshow_seconds=self.slideshow_seconds,
+            slideshow_effect=self.slideshow_effect,
+            slideshow_effect_ms=self.slideshow_effect_ms,
+            slideshow_loop=self.slideshow_loop_action.isChecked(),
+            slideshow_random=self.slideshow_random_action.isChecked(),
             favorites=list(self.favorites),
         )
         save_settings(self.settings)
@@ -1860,10 +2294,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.persist_settings()
+        self.slideshow_timer.stop()
         self.filmstrip.loader.close()
         self.stop_current()
         self.preloader.close()
         self.enhancer.close()
+        self.ocr_reader.close()
         super().closeEvent(event)
 
 

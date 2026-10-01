@@ -44,6 +44,8 @@ area_name() {
         src/local_media_viewer/filters.py)    echo "フィルター" ;;
         src/local_media_viewer/effects.py)    echo "エフェクト" ;;
         src/local_media_viewer/enhance.py)    echo "高画質化" ;;
+        src/local_media_viewer/ocr.py)        echo "文字認識（OCR）" ;;
+        src/local_media_viewer/transition.py) echo "スライドショーの切り替え効果" ;;
         src/local_media_viewer/media.py)      echo "ファイル一覧・並び順" ;;
         src/local_media_viewer/sorticon.py)   echo "並び順アイコン" ;;
         src/local_media_viewer/preloader.py)  echo "先読み" ;;
@@ -107,10 +109,17 @@ echo ""
 echo "=============================="
 green "[1/3] テスト"
 echo "=============================="
+# 配布ビルドと同じ 3.14 で確かめる。PATH の python は古い版のことがあるので
+# py ランチャーで 3.14 を選び、無ければ python に任せる
+if py -3.14 -c "" >/dev/null 2>&1; then
+    PYTHON=(py -3.14)
+else
+    PYTHON=(python)
+fi
 # 実マウスカーソルの位置で成否が変わる既知の不安定テストは除く（.claude/CLAUDE.md 参照）
-PYTHONPATH=src python -m pytest -q \
+PYTHONPATH=src "${PYTHON[@]}" -m pytest -q \
     --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
-python -m ruff check src tests
+"${PYTHON[@]}" -m ruff check src tests
 
 echo ""
 echo "=============================="

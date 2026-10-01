@@ -2,7 +2,7 @@
 # One-time (or one-per-machine) environment setup for scripts/build_mac.sh.
 #
 # Creates .venv/ using a Python that satisfies pyproject.toml's requirement
-# (>=3.11,<3.14) and installs the exact dependency versions the build needs
+# (>=3.11,<3.15) and installs the exact dependency versions the build needs
 # into it — independent of whatever `python3` happens to resolve to
 # system-wide. macOS's own /usr/bin/python3 (from the Xcode Command Line
 # Tools) is often older than that, which is why "Pillow==12.1.1" can fail to
@@ -17,13 +17,16 @@ find_python() {
     # locations for the python.org installer and Homebrew (both CPU types),
     # since a freshly installed Python often isn't on PATH as plain python3.
     candidates="
-        python3.13 python3.12 python3.11
+        python3.14 python3.13 python3.12 python3.11
+        /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14
         /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13
         /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
         /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11
+        /opt/homebrew/bin/python3.14
         /opt/homebrew/bin/python3.13
         /opt/homebrew/bin/python3.12
         /opt/homebrew/bin/python3.11
+        /usr/local/bin/python3.14
         /usr/local/bin/python3.13
         /usr/local/bin/python3.12
         /usr/local/bin/python3.11
@@ -38,9 +41,9 @@ find_python() {
 }
 
 PYTHON="$(find_python)" || {
-    echo "No Python 3.11-3.13 found on this Mac." >&2
+    echo "No Python 3.11-3.14 found on this Mac." >&2
     echo "Install one from https://www.python.org/downloads/macos/" >&2
-    echo "(the \"macOS 64-bit universal2 installer\" for 3.12 or 3.13)," >&2
+    echo "(the \"macOS 64-bit universal2 installer\" for 3.14)," >&2
     echo "then re-run this script." >&2
     exit 1
 }
