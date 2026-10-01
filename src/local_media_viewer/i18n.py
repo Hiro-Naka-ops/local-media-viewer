@@ -530,6 +530,17 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "找不到收藏的文件夹。\n{path}",
         KOREAN: "즐겨찾기 폴더를 찾을 수 없습니다.\n{path}",
     },
+    # PDF
+    "PDFを開けません": {
+        ENGLISH: "Cannot Open PDF",
+        CHINESE: "无法打开 PDF",
+        KOREAN: "PDF를 열 수 없습니다",
+    },
+    "{page} / {count} ページ": {
+        ENGLISH: "Page {page} of {count}",
+        CHINESE: "第 {page} / {count} 页",
+        KOREAN: "{page} / {count} 페이지",
+    },
     # Updates
     "ヘルプ(&H)": {ENGLISH: "&Help", CHINESE: "帮助(&H)", KOREAN: "도움말(&H)"},
     "更新を確認…": {ENGLISH: "Check for Updates…", CHINESE: "检查更新…", KOREAN: "업데이트 확인…"},

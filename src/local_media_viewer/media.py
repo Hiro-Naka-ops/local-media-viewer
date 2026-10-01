@@ -14,7 +14,9 @@ IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
 }
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
-MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+# Shown as one scrolling column of pages (pdfview.py), one file per document.
+PDF_EXTENSIONS = {".pdf"}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | PDF_EXTENSIONS
 
 SORT_NAME = "name"
 SORT_CREATED = "created"

@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QLocale,
     QPoint,
     QRect,
+    QSize,
     Qt,
     QTimer,
     QTranslator,
@@ -78,6 +79,7 @@ from local_media_viewer.mac_widget import (
 )
 from local_media_viewer.media import (
     IMAGE_EXTENSIONS,
+    PDF_EXTENSIONS,
     SORT_LABELS,
     VIDEO_EXTENSIONS,
     SortOrder,
@@ -86,6 +88,7 @@ from local_media_viewer.media import (
     media_files,
     sibling_media_folder,
 )
+from local_media_viewer.pdfview import PdfView
 from local_media_viewer.placement import LEFT, RIGHT, carried_over, centered, half
 from local_media_viewer.preloader import ImagePreloader, load_frame, load_image
 from local_media_viewer.settings import (
@@ -253,10 +256,16 @@ class MainWindow(QMainWindow):
         self.video_view.fullscreen_requested.connect(self.toggle_fullscreen)
         self.image_view.context_menu_requested.connect(self.show_media_menu)
         self.video_view.context_menu_requested.connect(self.show_media_menu)
+        self.pdf_view = PdfView()
+        self.pdf_view.navigate.connect(self.navigate)
+        self.pdf_view.fullscreen_requested.connect(self.toggle_fullscreen)
+        self.pdf_view.context_menu_requested.connect(self.show_media_menu)
+        self.pdf_view.page_changed.connect(self.show_pdf_page)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.image_view)
         self.stack.addWidget(self.video_view)
+        self.stack.addWidget(self.pdf_view)
 
         self.audio = QAudioOutput(self)
         self.audio.setVolume(self.settings.volume / 100)
@@ -346,7 +355,7 @@ class MainWindow(QMainWindow):
         self.open_folder_action.triggered.connect(self.choose_folder)
         self.previous_action.triggered.connect(lambda: self.navigate(-1))
         self.next_action.triggered.connect(lambda: self.navigate(1))
-        self.fit_action.triggered.connect(self.image_view.toggle_fit)
+        self.fit_action.triggered.connect(self.toggle_fit)
         # Per page and never remembered: the clean-up takes a second or so, too
         # slow to run on every page turned, so it is asked for picture by picture.
         self.enhance_action = QAction(self)
@@ -1050,7 +1059,7 @@ class MainWindow(QMainWindow):
         collapsed to one page would renumber the halves and strand the partner.
         """
         path = self.files[index]
-        if path.suffix.lower() in VIDEO_EXTENSIONS:
+        if path.suffix.lower() not in IMAGE_EXTENSIONS:
             return False
         cached = self.spread_probe_cache.get(path)
         if cached is not None:
@@ -1119,8 +1128,30 @@ class MainWindow(QMainWindow):
         self.persist_settings_soon()
         self.displayed_pages = [self.index]
         is_video = path.suffix.lower() in VIDEO_EXTENSIONS
+        is_pdf = path.suffix.lower() in PDF_EXTENSIONS
         self.show_video_controls(is_video)
-        if is_video:
+        # Up and Down scroll a PDF's pages; everywhere else they turn the
+        # page like Left and Right. Dropped from the actions here, they fall
+        # through to the PDF view, which scrolls like any scroll area.
+        self.previous_action.setShortcuts(
+            [QKeySequence(Qt.Key.Key_Left)]
+            if is_pdf
+            else [QKeySequence(Qt.Key.Key_Left), QKeySequence(Qt.Key.Key_Up)]
+        )
+        self.next_action.setShortcuts(
+            [QKeySequence(Qt.Key.Key_Right)]
+            if is_pdf
+            else [QKeySequence(Qt.Key.Key_Right), QKeySequence(Qt.Key.Key_Down)]
+        )
+        if is_pdf:
+            self.stack.setCurrentWidget(self.pdf_view)
+            self.video_view.update_duration(0)
+            # Each document opens fitted to the width, the way a page is read.
+            self.pdf_view.fit_width()
+            if not self.pdf_view.open(path):
+                QMessageBox.warning(self, tr("PDFを開けません"), path.name)
+            self.pdf_view.setFocus()
+        elif is_video:
             self.stack.setCurrentWidget(self.video_view)
             self.video_view.prepare_media()
             self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -1306,10 +1337,30 @@ class MainWindow(QMainWindow):
     def show_page_status(self) -> None:
         pages = self.displayed_pages or [self.index]
         numbers = "-".join(str(page + 1) for page in pages)
-        self.statusBar().showMessage(
-            f"{numbers} / {len(self.files)}　{self.files[pages[0]]}"
-        )
+        position = f"{numbers} / {len(self.files)}"
+        if self.stack.currentWidget() is self.pdf_view and self.pdf_view.page_count():
+            # Which of the document's own pages is at the top of the view.
+            # Ahead of the path: a long one runs under the dates on the right
+            # and would take anything after it along.
+            inside = tr(
+                "{page} / {count} ページ",
+                page=self.pdf_view.current_page() + 1,
+                count=self.pdf_view.page_count(),
+            )
+            position = f"{position}　{inside}"
+        self.statusBar().showMessage(f"{position}　{self.files[pages[0]]}")
         self.show_file_times(self.files[pages[0]])
+
+    def show_pdf_page(self) -> None:
+        if self.stack.currentWidget() is self.pdf_view and 0 <= self.index < len(self.files):
+            self.show_page_status()
+
+    def toggle_fit(self) -> None:
+        """Space: fit / actual size for a picture, width / whole page for a PDF."""
+        if self.stack.currentWidget() is self.pdf_view:
+            self.pdf_view.toggle_fit()
+        else:
+            self.image_view.toggle_fit()
 
     def show_sort_indicator(self) -> None:
         """Mark the current order beside the dates it applies to.
@@ -1403,7 +1454,6 @@ class MainWindow(QMainWindow):
         self.slideshow_timer = QTimer(self)
         self.slideshow_timer.setSingleShot(True)
         self.slideshow_timer.timeout.connect(self.advance_slideshow)
-        self.slideshow_video_waited = False
         # The toolbar's own button rather than slideshow_action again: a
         # button can say what pressing it does now ("stop"), which a ticked
         # menu entry sharing its words could not.
@@ -1567,7 +1617,6 @@ class MainWindow(QMainWindow):
 
     def restart_slideshow_timer(self) -> None:
         """Give the page on screen its full time, if a slideshow is running."""
-        self.slideshow_video_waited = False
         if self.slideshow_action.isChecked():
             self.slideshow_timer.start(self.slideshow_seconds * 1000)
 
@@ -1583,11 +1632,16 @@ class MainWindow(QMainWindow):
         """The page a running slideshow shows next, or None when it is over."""
         shown = self.displayed_pages or [self.index]
         loop = self.slideshow_loop_action.isChecked()
+        # Looping with no other picture in the folder: stay on the page, unless
+        # it is not a picture either (then there is nothing to show at all).
+        stay = shown[0] if self.in_slideshow(self.files[shown[0]]) else None
         if not self.slideshow_random_action.isChecked():
-            target = shown[-1] + 1
-            if target < len(self.files):
-                return target
-            return 0 if loop else None
+            ahead = range(shown[-1] + 1, len(self.files))
+            again = range(0, shown[0]) if loop else range(0)
+            for target in (*ahead, *again):
+                if self.in_slideshow(self.files[target]):
+                    return target
+            return stay if loop else None
         # A shuffled deck, not a fresh roll of the dice each time: every page
         # comes up once before any comes up twice, and "all shown" has a meaning.
         # Paths rather than indexes, which a change of sort order would shift.
@@ -1603,11 +1657,16 @@ class MainWindow(QMainWindow):
             if not loop:
                 return None
             self.slideshow_deck = self.dealt_deck(current)
-        # Looping with nothing else in the folder: stay on the page.
-        return shown[0]
+        return stay
+
+    @staticmethod
+    def in_slideshow(path: Path) -> bool:
+        """Pictures only (the user's call): a video has a length of its own
+        and a PDF is read by scrolling, so neither fits a timed page turn."""
+        return path.suffix.lower() in IMAGE_EXTENSIONS
 
     def dealt_deck(self, current: set[Path]) -> list[Path]:
-        deck = [path for path in self.files if path not in current]
+        deck = [path for path in self.files if path not in current and self.in_slideshow(path)]
         random.shuffle(deck)
         return deck
 
@@ -1617,14 +1676,6 @@ class MainWindow(QMainWindow):
         if self.slideshow_blocked():
             self.slideshow_timer.start(self.slideshow_seconds * 1000)
             return
-        if self.stack.currentWidget() is self.video_view and not self.slideshow_video_waited:
-            # A video plays through once before moving on, however short the
-            # interval. Only once: it loops, so "until it ends" has no end.
-            remaining = self.player.duration() - self.player.position()
-            if remaining > 0:
-                self.slideshow_video_waited = True
-                self.slideshow_timer.start(remaining)
-                return
         # Not navigate(): past the last page that asks about the next folder,
         # and a question popping up unattended is not a way to end a slideshow.
         target = self.next_slideshow_index()
@@ -1637,8 +1688,8 @@ class MainWindow(QMainWindow):
                 5000,
             )
             return
-        # Only between two pictures: a video is drawn by the player, which a
-        # photograph of the view does not capture.
+        # Only between two pictures: started from a video, the player draws it
+        # and a photograph of the view does not capture that.
         animated = (
             self.slideshow_effect != transition.NONE
             and self.stack.currentWidget() is self.image_view
@@ -1708,6 +1759,17 @@ class MainWindow(QMainWindow):
         return menu
 
     def choose_size(self, name: str) -> None:
+        if self.stack.currentWidget() is self.pdf_view:
+            # A PDF knows three sizes: its width, the whole page, 100%. Not
+            # saved: the choice in the settings is the one for pictures.
+            if name == ACTUAL_SIZE:
+                self.pdf_view.set_zoom(1.0)
+            elif name in (FIT_WINDOW, FIT_HEIGHT):
+                self.pdf_view.fit_page()
+            else:
+                self.pdf_view.fit_width()
+            self.show_size_state()
+            return
         if name == ACTUAL_SIZE:
             self.image_view.original_size()
         else:
@@ -1718,7 +1780,14 @@ class MainWindow(QMainWindow):
     def show_size_state(self) -> None:
         """Tick the entry describing the view as it is, which Space may have changed."""
         view = self.image_view
-        if view.fit_mode:
+        if self.stack.currentWidget() is self.pdf_view:
+            if self.pdf_view.fits_width():
+                current = FIT_WIDTH
+            elif self.pdf_view.fits_page():
+                current = FIT_WINDOW
+            else:
+                current = ACTUAL_SIZE if self.pdf_view.zoomFactor() == 1.0 else None
+        elif view.fit_mode:
             current = view.fit_kind
         elif view.display_scale == 1.0:
             current = ACTUAL_SIZE
@@ -2053,6 +2122,8 @@ class MainWindow(QMainWindow):
     def current_thumbnail(self) -> QPixmap:
         if self.stack.currentWidget() is self.video_view:
             return self.video_view.frame_pixmap()
+        if self.stack.currentWidget() is self.pdf_view:
+            return QPixmap.fromImage(self.pdf_view.page_image(QSize(512, 512)))
         return self.image_view.source_pixmap
 
     def show_media_menu(self, position: QPoint) -> None:
@@ -2291,6 +2362,7 @@ class MainWindow(QMainWindow):
         self.animation_timer.stop()
         self.clear_animation_cache()
         self.player.stop()
+        self.pdf_view.close_document()
         if self.image is not None:
             self.image.close()
             self.image = None

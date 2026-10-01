@@ -19,7 +19,8 @@ from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QAbstractItemView, QFrame, QHBoxLayout, QListView, QWidget
 
 from local_media_viewer import heic  # noqa: F401  (registers the HEIC decoder)
-from local_media_viewer.media import VIDEO_EXTENSIONS
+from local_media_viewer.media import PDF_EXTENSIONS, VIDEO_EXTENSIONS
+from local_media_viewer.pdfview import read_first_page
 
 THUMBNAIL_SIZE = QSize(88, 62)
 ITEM_SIZE = QSize(104, 88)
@@ -53,6 +54,8 @@ def read_thumbnail(path: Path) -> QImage:
     QImage is used rather than QPixmap because this runs off the UI thread,
     where QPixmap is not allowed.
     """
+    if path.suffix.lower() in PDF_EXTENSIONS:
+        return read_first_page(path, THUMBNAIL_SIZE)
     reader = QImageReader(str(path))
     reader.setAutoTransform(True)
     size = reader.size()

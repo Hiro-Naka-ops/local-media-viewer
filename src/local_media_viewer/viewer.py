@@ -283,6 +283,10 @@ class ImageView(QGraphicsView):
     def __init__(self) -> None:
         super().__init__()
         self.setScene(QGraphicsScene(self))
+        # A QGraphicsView takes drops for its scene, which has no use for a
+        # file and turns it down, so a file dropped on the picture never
+        # reached the window. Switched off, the drop goes up to the window.
+        self.setAcceptDrops(False)
         self.pager = WheelPager()
         self.item = QGraphicsPixmapItem()
         self.scene().addItem(self.item)
@@ -600,6 +604,10 @@ class VideoView(QWidget):
         self.surface = QVideoWidget(self)
         self.surface.setMouseTracking(True)
         self.surface.installEventFilter(self)
+        # The video widget draws through an inner widget that accepts drops and
+        # then ignores them; as with ImageView, the window should get the file.
+        for child in self.surface.findChildren(QWidget):
+            child.setAcceptDrops(False)
         self.controls = VideoControls(self)
         self.controls.seek_requested.connect(self.seek_requested)
         self.controls.pointer_entered.connect(self.show_video_controls)

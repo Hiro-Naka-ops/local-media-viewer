@@ -105,24 +105,39 @@ def test_the_page_waits_while_a_menu_or_dialog_is_open(tmp_path: Path, monkeypat
         window.close()
 
 
-def test_a_video_plays_through_once_before_the_next_page(tmp_path: Path, monkeypatch) -> None:
-    make_book(tmp_path / "book")
+def test_videos_and_pdfs_are_left_out_of_a_slideshow(tmp_path: Path, monkeypatch) -> None:
+    make_book(tmp_path / "book", pages=2)
+    # Never opened, so what is inside does not matter: the name decides.
+    (tmp_path / "book" / "0a.mp4").write_bytes(b"")
+    (tmp_path / "book" / "0b.pdf").write_bytes(b"")
+    (tmp_path / "book" / "2.mp4").write_bytes(b"")
     window = make_window(monkeypatch)
     try:
         window.open_path(tmp_path / "book" / "0.png")
+        assert [path.name for path in window.files] == ["0.png", "0a.mp4", "0b.pdf", "1.png", "2.mp4"]
         window.slideshow_action.trigger()
-        # Stand in for a 9 second video that is 2 seconds in.
-        window.stack.setCurrentWidget(window.video_view)
-        monkeypatch.setattr(window.player, "duration", lambda: 9000)
-        monkeypatch.setattr(window.player, "position", lambda: 2000)
 
         window.slideshow_timer.timeout.emit()
-        assert window.index == 0
-        assert window.slideshow_timer.interval() == 7000
+        assert window.files[window.index].name == "1.png"
 
-        # It loops, so the second time round it moves on regardless.
+        # Only a video is left after it: that is the end, not a page to show.
         window.slideshow_timer.timeout.emit()
-        assert window.index == 1
+        assert window.files[window.index].name == "1.png"
+        assert not window.slideshow_action.isChecked()
+
+        # Looping goes round to the first picture, past the video at the end.
+        window.slideshow_loop_action.setChecked(True)
+        window.slideshow_action.trigger()
+        window.slideshow_timer.timeout.emit()
+        assert window.files[window.index].name == "0.png"
+
+        # Shuffled, the deck holds pictures only.
+        window.slideshow_random_action.setChecked(True)
+        names = set()
+        for _turn in range(12):
+            window.slideshow_timer.timeout.emit()
+            names.add(window.files[window.index].name)
+        assert names == {"0.png", "1.png"}
     finally:
         window.close()
 

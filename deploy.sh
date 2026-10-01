@@ -56,6 +56,7 @@ area_name() {
         src/local_media_viewer/appicon.py)    echo "アプリアイコン" ;;
         src/local_media_viewer/controls.py)   echo "スライダー" ;;
         src/local_media_viewer/update.py)     echo "アップデート" ;;
+        src/local_media_viewer/pdfview.py)    echo "PDF表示" ;;
         src/*)                                echo "アプリ本体" ;;
         tests/*)                              echo "テスト" ;;
         .github/*|scripts/*|*.spec)           echo "ビルド設定" ;;
