@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import threading
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import monotonic
@@ -10,7 +11,7 @@ import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import local_media_viewer.app as app_module
-from local_media_viewer import __version__, update
+from local_media_viewer import __release_date__, __version__, update
 from local_media_viewer.settings import ViewerSettings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -235,7 +236,14 @@ def test_the_help_menu_offers_the_check_and_nothing_goes_online_unasked(monkeypa
     window = make_window(monkeypatch)
     try:
         assert window.help_menu.title() == "ヘルプ(&H)"
-        assert [action.text() for action in window.help_menu.actions()] == ["更新を確認…"]
+        texts = [a.text() for a in window.help_menu.actions() if not a.isSeparator()]
+        assert texts == ["更新を確認…", f"バージョン {__version__}（{__release_date__} 更新）"]
+        # Information only, and it follows the language like everything else.
+        assert not window.version_action.isEnabled()
+        window.language_actions["en"].trigger()
+        assert window.version_action.text() == (
+            f"Version {__version__} (updated {__release_date__})"
+        )
         assert requests == []
     finally:
         window.close()
@@ -313,5 +321,12 @@ def test_stamping_writes_the_release_version_into_the_source(tmp_path: Path) -> 
     target.write_bytes(b'__version__ = "0.1.0"\r\nrest = 1\r\n')
     stamp_version.stamp(target, stamp_version.TARGETS[0][1], "1.3.0")
     assert target.read_bytes() == b'__version__ = "1.3.0"\r\nrest = 1\r\n'
+
     for path, pattern in stamp_version.TARGETS:
         assert len(stamp_version.re.findall(pattern, path.read_text(encoding="utf-8"), stamp_version.re.M)) == 1
+
+
+def test_the_release_date_in_the_source_is_a_date_the_stamp_can_replace() -> None:
+    date.fromisoformat(__release_date__)
+    text = (ROOT / "src" / "local_media_viewer" / "__init__.py").read_text(encoding="utf-8")
+    assert text.count(f'__release_date__ = "{__release_date__}"') == 1

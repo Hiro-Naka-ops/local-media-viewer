@@ -533,6 +533,11 @@ CATALOG: dict[str, dict[str, str]] = {
     # Updates
     "ヘルプ(&H)": {ENGLISH: "&Help", CHINESE: "帮助(&H)", KOREAN: "도움말(&H)"},
     "更新を確認…": {ENGLISH: "Check for Updates…", CHINESE: "检查更新…", KOREAN: "업데이트 확인…"},
+    "バージョン {version}（{date} 更新）": {
+        ENGLISH: "Version {version} (updated {date})",
+        CHINESE: "版本 {version}（{date} 更新）",
+        KOREAN: "버전 {version}（{date} 업데이트）",
+    },
     "更新の確認": {ENGLISH: "Check for Updates", CHINESE: "检查更新", KOREAN: "업데이트 확인"},
     "更新を確認しています…": {
         ENGLISH: "Checking for updates…",

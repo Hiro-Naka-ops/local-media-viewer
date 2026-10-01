@@ -62,7 +62,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from local_media_viewer import __version__, i18n, ocr, transition, update
+from local_media_viewer import __release_date__, __version__, i18n, ocr, transition, update
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
@@ -685,6 +685,9 @@ class MainWindow(QMainWindow):
         self.window_menu.setTitle(tr("ウィンドウ(&W)"))
         self.help_menu.setTitle(tr("ヘルプ(&H)"))
         self.update_action.setText(tr("更新を確認…"))
+        self.version_action.setText(
+            tr("バージョン {version}（{date} 更新）", version=__version__, date=__release_date__)
+        )
         self.always_on_top_action.setText(tr("常に手前に表示"))
         self.maximize_action.setText(tr("最大化"))
         self.snap_left_action.setText(tr("画面の左半分に配置"))
@@ -1793,6 +1796,12 @@ class MainWindow(QMainWindow):
 
         self.help_menu = bar.addMenu("")
         self.help_menu.addAction(self.update_action)
+        self.help_menu.addSeparator()
+        # Read, not pressed: which version this is and the day it was released,
+        # right where the update check is, without a dialog to open.
+        self.version_action = QAction(self)
+        self.version_action.setEnabled(False)
+        self.help_menu.addAction(self.version_action)
 
     def check_for_updates(self) -> None:
         if self.updater.busy:
