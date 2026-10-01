@@ -258,6 +258,7 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
             "見開き(&S)",
             "お気に入り(&A)",
             "ウィンドウ(&W)",
+            "ヘルプ(&H)",
         ]
 
         panels, drawing, spread = window.option_groups

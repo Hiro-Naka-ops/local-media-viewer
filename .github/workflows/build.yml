@@ -59,6 +59,12 @@ jobs:
           python -m pip install $REQUIREMENTS pytest==9.0.2 pyinstaller==6.19.0
           python -m pip install -r scripts/requirements-windows.txt
 
+      - name: Stamp the release version
+        # The app compares this with the latest release ("更新を確認…"); a trial
+        # build keeps the version in the repository.
+        if: inputs.release
+        run: python scripts/stamp_version.py "${{ inputs.version }}"
+
       - name: Test
         # Windows is the main platform, so a failure here stops the release.
         # The timeline test follows the real mouse cursor and is known to flake.
@@ -105,6 +111,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Stamp the release version
+        if: inputs.release
+        run: python scripts/stamp_version.py "${{ inputs.version }}"
 
       - name: Test
         # Reported, not blocking: a headless Mac runner has no real screen or

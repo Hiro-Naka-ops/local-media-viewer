@@ -46,7 +46,7 @@ def test_the_window_menu_sits_right_of_favorites(monkeypatch) -> None:
     window = make_window(monkeypatch)
     try:
         titles = [action.text() for action in window.menuBar().actions()]
-        assert titles[-2:] == ["お気に入り(&A)", "ウィンドウ(&W)"]
+        assert titles[-3:] == ["お気に入り(&A)", "ウィンドウ(&W)", "ヘルプ(&H)"]
         texts = [
             action.text() for action in window.window_menu.actions() if not action.isSeparator()
         ]

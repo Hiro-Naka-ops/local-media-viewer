@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QActionGroup,
     QCloseEvent,
     QColor,
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QFileOpenEvent,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSlider,
     QSplitter,
@@ -60,7 +62,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from local_media_viewer import i18n, ocr, transition
+from local_media_viewer import __version__, i18n, ocr, transition, update
 from local_media_viewer.appicon import app_icon, claim_taskbar_identity
 from local_media_viewer.controls import ClickableLabel, SnappingSlider
 from local_media_viewer.effects import EFFECT_LABELS, LINE_COLOR, NONE, apply_effect
@@ -416,6 +418,18 @@ class MainWindow(QMainWindow):
         self.open_folder_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
         self.quit_action = QAction(self)
         self.quit_action.triggered.connect(self.close)
+        # The only thing in the app that goes online, and only when chosen
+        # from the menu: nothing checks for updates on its own.
+        self.update_action = QAction(self)
+        self.update_action.triggered.connect(self.check_for_updates)
+        self.updater = update.Updater(self)
+        self.updater.checked.connect(self.show_update_check)
+        self.updater.check_failed.connect(self.show_update_check_failure)
+        self.updater.progress.connect(self.show_update_progress)
+        self.updater.downloaded.connect(self.install_update)
+        self.updater.download_failed.connect(self.show_update_download_failure)
+        self.update_progress: QProgressDialog | None = None
+        self.update_page = update.RELEASES_PAGE
         self.create_menu_bar()
         # Full screen hides the menu bar and the toolbar, and an action's key
         # only fires while a widget holding it is visible, so the arrows and
@@ -669,6 +683,8 @@ class MainWindow(QMainWindow):
         self.spread_menu.setTitle(tr("見開き(&S)"))
         self.favorites_menu.setTitle(tr("お気に入り(&A)"))
         self.window_menu.setTitle(tr("ウィンドウ(&W)"))
+        self.help_menu.setTitle(tr("ヘルプ(&H)"))
+        self.update_action.setText(tr("更新を確認…"))
         self.always_on_top_action.setText(tr("常に手前に表示"))
         self.maximize_action.setText(tr("最大化"))
         self.snap_left_action.setText(tr("画面の左半分に配置"))
@@ -1709,7 +1725,7 @@ class MainWindow(QMainWindow):
             action.setChecked(key == current)
 
     def create_menu_bar(self) -> None:
-        """ファイル / 表示 / 移動 / 見開き / お気に入り / ウィンドウ, as Windows apps order them.
+        """ファイル / 表示 / 移動 / 見開き / お気に入り / ウィンドウ / ヘルプ, as Windows apps order them.
 
         The actions belong to the window, so the right-click menu shows the
         very same ones and their ticks stay in step without any syncing.
@@ -1774,6 +1790,134 @@ class MainWindow(QMainWindow):
         self.window_menu.addSeparator()
         self.window_menu.addAction(self.next_screen_action)
         self.window_menu.aboutToShow.connect(self.prepare_window_menu)
+
+        self.help_menu = bar.addMenu("")
+        self.help_menu.addAction(self.update_action)
+
+    def check_for_updates(self) -> None:
+        if self.updater.busy:
+            return
+        self.statusBar().showMessage(tr("更新を確認しています…"))
+        self.updater.check()
+
+    def show_update_check(self, release: update.Release) -> None:
+        self.statusBar().clearMessage()
+        self.update_page = release.page
+        if not update.is_newer(release.version):
+            QMessageBox.information(
+                self,
+                tr("更新の確認"),
+                tr("お使いのバージョン {version} は最新です。", version=__version__),
+            )
+            return
+        if not (update.can_self_update() and release.download):
+            self.offer_download_page(
+                tr(
+                    "新しいバージョン {latest} があります（現在のバージョン: {current}）。\n"
+                    "ダウンロードページを開きますか？",
+                    latest=release.version,
+                    current=__version__,
+                )
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("更新の確認"),
+            tr(
+                "新しいバージョン {latest} があります（現在のバージョン: {current}）。\n"
+                "ダウンロードして更新しますか？更新後にアプリを再起動します。",
+                latest=release.version,
+                current=__version__,
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        # Window-modal, so nothing else (a second check, closing the window
+        # half-way) can be started under the download. Its Cancel button is
+        # Qt's own and follows the language through the Qt translation.
+        self.update_progress = QProgressDialog(self)
+        self.update_progress.setWindowTitle(tr("更新の確認"))
+        self.update_progress.setLabelText(tr("更新をダウンロードしています…"))
+        self.update_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.update_progress.setMinimumDuration(0)
+        # Left to close_update_progress: reaching 100% is not the end, the
+        # hash check and the swap still follow.
+        self.update_progress.setAutoClose(False)
+        self.update_progress.setAutoReset(False)
+        self.update_progress.setRange(0, 0)
+        self.update_progress.canceled.connect(self.cancel_update)
+        self.update_progress.show()
+        self.updater.download(release, update.staging_path(Path(sys.executable)))
+
+    def show_update_check_failure(self, reason: str) -> None:
+        self.statusBar().clearMessage()
+        QMessageBox.warning(
+            self, tr("更新の確認"), tr("更新を確認できませんでした。\n{reason}", reason=reason)
+        )
+
+    def show_update_progress(self, done: int, total: int) -> None:
+        if self.update_progress is not None:
+            # A total of 0 (size unknown) leaves the bar as a busy indicator.
+            self.update_progress.setMaximum(total)
+            self.update_progress.setValue(done)
+
+    def cancel_update(self) -> None:
+        self.updater.cancel()
+        self.close_update_progress()
+
+    def close_update_progress(self) -> None:
+        dialog, self.update_progress = self.update_progress, None
+        if dialog is not None:
+            dialog.hide()
+            dialog.deleteLater()
+
+    def show_update_download_failure(self, reason: str) -> None:
+        self.close_update_progress()
+        self.offer_download_page(
+            tr(
+                "更新をダウンロードできませんでした。\n{reason}\n\nダウンロードページを開きますか？",
+                reason=reason,
+            )
+        )
+
+    def install_update(self, path: Path) -> None:
+        self.close_update_progress()
+        executable = Path(sys.executable)
+        try:
+            update.install(path, executable)
+        except OSError as error:
+            update.remove_leftovers(executable)
+            self.offer_download_page(
+                tr(
+                    "更新を適用できませんでした。\n{reason}\n\nダウンロードページを開きますか？",
+                    reason=error,
+                )
+            )
+            return
+        # Saved before the new copy starts, so it opens on the same page.
+        self.persist_settings()
+        try:
+            update.relaunch(executable)
+        except OSError:
+            QMessageBox.information(
+                self, tr("更新の確認"), tr("更新を適用しました。アプリを起動し直してください。")
+            )
+        self.close()
+
+    def offer_download_page(self, question: str) -> None:
+        """The fallback wherever the app cannot swap itself: the Mac app, a run
+        from source, a release without a verifiable EXE, a failed download."""
+        answer = QMessageBox.question(
+            self,
+            tr("更新の確認"),
+            question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl(self.update_page))
 
     def create_window_actions(self) -> None:
         self.always_on_top_action = QAction(self)
@@ -2300,6 +2444,7 @@ class MainWindow(QMainWindow):
         self.preloader.close()
         self.enhancer.close()
         self.ocr_reader.close()
+        self.updater.cancel()
         super().closeEvent(event)
 
 
@@ -2371,4 +2516,8 @@ def main() -> None:
     if app.pending_widget_url is not None:
         window.handle_widget_url(app.pending_widget_url)
     window.show()
+    if update.can_self_update():
+        # Not at once: right after an update the copy that was replaced is
+        # still shutting down and Windows will not delete its file yet.
+        QTimer.singleShot(5000, lambda: update.remove_leftovers(Path(sys.executable)))
     raise SystemExit(app.exec())

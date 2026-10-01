@@ -530,6 +530,69 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "找不到收藏的文件夹。\n{path}",
         KOREAN: "즐겨찾기 폴더를 찾을 수 없습니다.\n{path}",
     },
+    # Updates
+    "ヘルプ(&H)": {ENGLISH: "&Help", CHINESE: "帮助(&H)", KOREAN: "도움말(&H)"},
+    "更新を確認…": {ENGLISH: "Check for Updates…", CHINESE: "检查更新…", KOREAN: "업데이트 확인…"},
+    "更新の確認": {ENGLISH: "Check for Updates", CHINESE: "检查更新", KOREAN: "업데이트 확인"},
+    "更新を確認しています…": {
+        ENGLISH: "Checking for updates…",
+        CHINESE: "正在检查更新…",
+        KOREAN: "업데이트를 확인하는 중…",
+    },
+    "お使いのバージョン {version} は最新です。": {
+        ENGLISH: "Version {version} is the latest.",
+        CHINESE: "当前版本 {version} 已是最新。",
+        KOREAN: "사용 중인 버전 {version}은(는) 최신입니다.",
+    },
+    "新しいバージョン {latest} があります（現在のバージョン: {current}）。\n"
+    "ダウンロードして更新しますか？更新後にアプリを再起動します。": {
+        ENGLISH: "Version {latest} is available (you have {current}).\n"
+        "Download and install it? The app restarts afterwards.",
+        CHINESE: "有新版本 {latest}（当前版本: {current}）。\n要下载并更新吗？更新后将重新启动应用。",
+        KOREAN: "새 버전 {latest}이(가) 있습니다（현재 버전: {current}）.\n"
+        "다운로드하여 업데이트할까요? 업데이트 후 앱을 다시 시작합니다.",
+    },
+    "新しいバージョン {latest} があります（現在のバージョン: {current}）。\n"
+    "ダウンロードページを開きますか？": {
+        ENGLISH: "Version {latest} is available (you have {current}).\nOpen the download page?",
+        CHINESE: "有新版本 {latest}（当前版本: {current}）。\n要打开下载页面吗？",
+        KOREAN: "새 버전 {latest}이(가) 있습니다（현재 버전: {current}）.\n다운로드 페이지를 열까요?",
+    },
+    "更新を確認できませんでした。\n{reason}": {
+        ENGLISH: "Could not check for updates.\n{reason}",
+        CHINESE: "无法检查更新。\n{reason}",
+        KOREAN: "업데이트를 확인하지 못했습니다.\n{reason}",
+    },
+    "更新情報を読み取れませんでした": {
+        ENGLISH: "The update information could not be read",
+        CHINESE: "无法读取更新信息",
+        KOREAN: "업데이트 정보를 읽지 못했습니다",
+    },
+    "更新をダウンロードしています…": {
+        ENGLISH: "Downloading the update…",
+        CHINESE: "正在下载更新…",
+        KOREAN: "업데이트를 다운로드하는 중…",
+    },
+    "ダウンロードしたファイルが壊れています": {
+        ENGLISH: "The downloaded file is damaged",
+        CHINESE: "下载的文件已损坏",
+        KOREAN: "다운로드한 파일이 손상되었습니다",
+    },
+    "更新をダウンロードできませんでした。\n{reason}\n\nダウンロードページを開きますか？": {
+        ENGLISH: "The update could not be downloaded.\n{reason}\n\nOpen the download page?",
+        CHINESE: "无法下载更新。\n{reason}\n\n要打开下载页面吗？",
+        KOREAN: "업데이트를 다운로드하지 못했습니다.\n{reason}\n\n다운로드 페이지를 열까요?",
+    },
+    "更新を適用できませんでした。\n{reason}\n\nダウンロードページを開きますか？": {
+        ENGLISH: "The update could not be installed.\n{reason}\n\nOpen the download page?",
+        CHINESE: "无法安装更新。\n{reason}\n\n要打开下载页面吗？",
+        KOREAN: "업데이트를 적용하지 못했습니다.\n{reason}\n\n다운로드 페이지를 열까요?",
+    },
+    "更新を適用しました。アプリを起動し直してください。": {
+        ENGLISH: "The update is installed. Please start the app again.",
+        CHINESE: "更新已安装。请重新启动应用。",
+        KOREAN: "업데이트를 적용했습니다. 앱을 다시 시작해 주세요.",
+    },
 }
 
 _current = JAPANESE

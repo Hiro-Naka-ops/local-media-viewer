@@ -55,6 +55,7 @@ area_name() {
         src/local_media_viewer/heic.py)       echo "HEIC対応" ;;
         src/local_media_viewer/appicon.py)    echo "アプリアイコン" ;;
         src/local_media_viewer/controls.py)   echo "スライダー" ;;
+        src/local_media_viewer/update.py)     echo "アップデート" ;;
         src/*)                                echo "アプリ本体" ;;
         tests/*)                              echo "テスト" ;;
         .github/*|scripts/*|*.spec)           echo "ビルド設定" ;;
