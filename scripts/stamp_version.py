@@ -15,10 +15,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = re.compile(r"v?(\d+\.\d+\.\d+)")
-# (file, the line that carries the version)
+# (file, the line that carries the version). Not anchored at the line's end:
+# a Windows runner checks the files out with CRLF, and $ does not match before
+# carriage return.
 TARGETS = [
-    (ROOT / "src" / "local_media_viewer" / "__init__.py", r'^__version__ = "[^"]*"$'),
-    (ROOT / "pyproject.toml", r'^version = "[^"]*"$'),
+    (ROOT / "src" / "local_media_viewer" / "__init__.py", r'^__version__ = "[^"]*"'),
+    (ROOT / "pyproject.toml", r'^version = "[^"]*"'),
 ]
 
 

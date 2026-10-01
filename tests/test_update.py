@@ -308,5 +308,10 @@ def test_stamping_writes_the_release_version_into_the_source(tmp_path: Path) -> 
 
     # Still LF: text mode on Windows would have written CRLF.
     assert target.read_bytes() == b'"""Doc."""\n\n__version__ = "1.3.0"\n'
+    # A Windows runner checks the sources out with CRLF, which made the
+    # release build fail to find the line; the endings are kept as they are.
+    target.write_bytes(b'__version__ = "0.1.0"\r\nrest = 1\r\n')
+    stamp_version.stamp(target, stamp_version.TARGETS[0][1], "1.3.0")
+    assert target.read_bytes() == b'__version__ = "1.3.0"\r\nrest = 1\r\n'
     for path, pattern in stamp_version.TARGETS:
         assert len(stamp_version.re.findall(pattern, path.read_text(encoding="utf-8"), stamp_version.re.M)) == 1
