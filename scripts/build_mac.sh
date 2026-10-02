@@ -94,16 +94,36 @@ PYEOF
 CERT_NAME="Local Media Viewer Dev"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 if security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$CERT_NAME"; then
+    # Pass 1: sign every nested framework/library normally (--deep), each
+    # getting its own correct, auto-generated requirement for ITS OWN
+    # identifier (Python.framework, PySide6's Qt frameworks, etc. are not
+    # "io.github.local-media-viewer" and must not be told they are).
+    codesign --force --deep --sign "$CERT_NAME" "dist/Local Media Viewer.app"
+
+    # Pass 2: re-sign ONLY the outer app bundle (no --deep this time) with
+    # an explicit requirement pinned to this certificate's own hash rather
+    # than codesign's default. The default requirement for a self-signed
+    # cert (no Apple CA chain backing it) still ties itself to the exact
+    # binary content, so it changes on every rebuild — a version update
+    # looks like a brand-new app to macOS and every TCC grant (Full Disk
+    # Access included) has to be re-approved, even though the same
+    # certificate signed it. Pinning it to "this certificate + this bundle
+    # identifier" instead makes any build signed with it count as the same
+    # app, so a grant survives rebuilds, version bumps included. Doing this
+    # as its own non-deep pass leaves pass 1's nested signatures untouched —
+    # applying this top-level-only requirement with --deep would overwrite
+    # every nested item with a requirement naming the WRONG identifier for
+    # them, which is what broke `codesign --verify` (and real TCC checks)
+    # last time.
     CERT_HASH="$(security find-certificate -c "$CERT_NAME" -Z "$KEYCHAIN" 2>/dev/null \
         | awk '/^SHA-1 hash:/{print $NF; exit}')"
     if [ -n "$CERT_HASH" ]; then
-        codesign --force --deep --sign "$CERT_NAME" \
+        codesign --force --sign "$CERT_NAME" \
             -r "=designated => anchor = H\"$CERT_HASH\" and identifier \"io.github.local-media-viewer\"" \
             "dist/Local Media Viewer.app"
     else
         echo "Found certificate \"$CERT_NAME\" but could not read its hash;" >&2
-        echo "signing without a pinned requirement (prompts may reappear on rebuild)." >&2
-        codesign --force --deep --sign "$CERT_NAME" "dist/Local Media Viewer.app"
+        echo "leaving the default (unpinned) requirement; prompts may reappear on rebuild." >&2
     fi
 else
     echo "No local signing certificate found; run scripts/setup_mac.sh to create one" >&2
