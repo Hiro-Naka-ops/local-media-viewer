@@ -79,16 +79,32 @@ PYEOF
 # like Documents/Desktop, or to the widget's shared App Group container,
 # with no prompt and no error, because it can't trust who is asking.
 #
-# Prefers the stable local certificate scripts/setup_mac.sh creates: an
-# ad-hoc signature (--sign -) is keyed off the binary's own hash, so it
-# changes on every rebuild and macOS treats each one as a different app,
-# re-asking for every TCC permission again. Falls back to ad hoc only if
-# setup hasn't been run (or was run before this existed) so the build still
-# works, just with that re-prompting.
+# Prefers the stable local certificate scripts/setup_mac.sh creates, signed
+# with an EXPLICIT designated requirement pinned to that certificate's own
+# hash rather than codesign's auto-generated one. codesign's default
+# requirement for a self-signed cert (no Apple CA chain backing it) still
+# ties itself to the exact binary content, so it changes on every rebuild —
+# a version update looks like a brand-new app to macOS and every TCC grant
+# (Full Disk Access included) has to be re-approved, even though the same
+# certificate signed it. Pinning the requirement to "this certificate +
+# this bundle identifier" instead makes any build signed with it count as
+# the same app, so a grant survives rebuilds, version bumps included.
+# Falls back to ad hoc only if setup hasn't been run (or was run before
+# this existed) so the build still works, just with that re-prompting.
 CERT_NAME="Local Media Viewer Dev"
-if security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null \
-        | grep -q "$CERT_NAME"; then
-    codesign --force --deep --sign "$CERT_NAME" "dist/Local Media Viewer.app"
+KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+if security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$CERT_NAME"; then
+    CERT_HASH="$(security find-certificate -c "$CERT_NAME" -Z "$KEYCHAIN" 2>/dev/null \
+        | awk '/^SHA-1 hash:/{print $NF; exit}')"
+    if [ -n "$CERT_HASH" ]; then
+        codesign --force --deep --sign "$CERT_NAME" \
+            -r "=designated => anchor = H\"$CERT_HASH\" and identifier \"io.github.local-media-viewer\"" \
+            "dist/Local Media Viewer.app"
+    else
+        echo "Found certificate \"$CERT_NAME\" but could not read its hash;" >&2
+        echo "signing without a pinned requirement (prompts may reappear on rebuild)." >&2
+        codesign --force --deep --sign "$CERT_NAME" "dist/Local Media Viewer.app"
+    fi
 else
     echo "No local signing certificate found; run scripts/setup_mac.sh to create one" >&2
     echo "so macOS privacy prompts don't reappear on every rebuild. Signing ad hoc for now." >&2
