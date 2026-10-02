@@ -65,11 +65,10 @@ def make_window(
     monkeypatch, available: bool = True, reads=None, enabled: bool = True
 ) -> app_module.MainWindow:
     QApplication.instance() or QApplication([])
-    # The feature is switched off in the app for now; these tests keep it working.
     monkeypatch.setattr(app_module, "OCR_ENABLED", enabled)
     monkeypatch.setattr(app_module, "load_settings", ViewerSettings)
     monkeypatch.setattr(app_module, "save_settings", lambda _settings: None)
-    # The same on every machine: no dependence on Windows' OCR languages.
+    # The same on every machine: no dependence on the OCR library being installed.
     monkeypatch.setattr(ocr, "available", lambda: available)
     if reads is not None:
         monkeypatch.setattr(ocr, "recognize", reads)
@@ -200,8 +199,26 @@ def test_the_feature_is_hidden_while_switched_off(tmp_path: Path, monkeypatch) -
         window.close()
 
 
-def test_it_is_switched_off_as_shipped() -> None:
-    assert app_module.OCR_ENABLED is False
+def test_it_is_switched_on_as_shipped() -> None:
+    assert app_module.OCR_ENABLED is True
+
+
+def test_it_is_not_offered_without_the_model_files(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("glyph_ocr")
+    from glyph_ocr.models import SPECS
+
+    monkeypatch.setattr(ocr, "settings_path", lambda: tmp_path / "settings.json")
+    assert ocr.model_directory() is None
+
+    folder = tmp_path / ocr.MODELS_FOLDER
+    folder.mkdir()
+    names = [name for _stage, name, _sha256 in SPECS.values()]
+    for name in names[:-1]:
+        (folder / name).write_bytes(b"")
+    # One short of the set is still not a set.
+    assert ocr.model_directory() is None
+    (folder / names[-1]).write_bytes(b"")
+    assert ocr.model_directory() == folder
 
 
 def test_the_key_works_in_full_screen(monkeypatch) -> None:
@@ -212,8 +229,7 @@ def test_the_key_works_in_full_screen(monkeypatch) -> None:
         window.close()
 
 
-@pytest.mark.skipif(not ocr.available(), reason="no Windows OCR language on this machine")
-def test_windows_really_reads_a_picture() -> None:
+def lettered_picture() -> QImage:
     QApplication.instance() or QApplication([])
     image = QImage(900, 160, QImage.Format.Format_RGB32)
     image.fill(QColor("white"))
@@ -222,14 +238,240 @@ def test_windows_really_reads_a_picture() -> None:
     painter.setFont(QFont("Arial", 48))
     painter.drawText(40, 110, "HELLO WORLD 2026")
     painter.end()
+    return image
+
+
+@pytest.mark.skipif(ocr.windows_engine() is None, reason="no Windows OCR language on this machine")
+def test_the_windows_reader_kept_in_reserve_still_reads() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    # On a worker, as it would be used: it refuses to wait on the UI thread.
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        text = worker.submit(ocr.recognize_with_windows, lettered_picture()).result()
+    assert "HELLO" in text and "2026" in text
+
+
+@pytest.mark.skipif(not ocr.available(), reason="glyph-ocr or its models are not installed")
+def test_the_library_really_reads_a_picture() -> None:
+    image = lettered_picture()
 
     reader = ocr.Reader()
     try:
         results = []
-        reader.ready.connect(lambda _generation, text: results.append(text))
+        reader.ready.connect(lambda _generation, reading: results.append(reading))
         reader.request(image)
         wait_for(lambda: results)
         assert results[0] is not None
-        assert "HELLO" in results[0] and "2026" in results[0]
+        assert "HELLO" in results[0].text and "2026" in results[0].text
+        # Where it stands, in the picture's own pixels: the words were drawn
+        # from x=40 across the middle of a 900x160 picture.
+        (line,) = results[0].lines
+        xs = [x for x, _y in line.quad]
+        ys = [y for _x, y in line.quad]
+        assert 20 <= min(xs) <= 60 and 500 <= max(xs) <= 900
+        assert 30 <= min(ys) and max(ys) <= 150
     finally:
         reader.close()
+
+
+def reading_of_two_lines(_image: QImage) -> ocr.Reading:
+    return ocr.Reading(
+        "横の行\n縦の行",
+        (
+            ocr.TextLine("横の行", ((10, 4), (50, 4), (50, 14), (10, 14))),
+            ocr.TextLine("縦の行", ((2, 2), (8, 2), (8, 38), (2, 38))),
+        ),
+    )
+
+
+def test_the_reading_is_drawn_over_the_picture_and_listed_too(
+    tmp_path: Path, monkeypatch
+) -> None:
+    make_book(tmp_path / "book")
+    window = make_window(monkeypatch, reads=reading_of_two_lines)
+    try:
+        window.resize(700, 600)
+        window.show()
+        window.open_path(tmp_path / "book" / "1.png")
+        overlay = window.image_view.text_overlay
+        assert overlay.lines == []
+        before = window.image_view.grab().toImage()
+
+        window.ocr_action.trigger()
+        wait_for(lambda: window.ocr_dialog is not None)
+
+        # Both at once: the list in its window, the boxes on the picture.
+        assert window.ocr_dialog.editor.toPlainText() == "横の行\n縦の行"
+        assert [text for text, _polygon in overlay.lines] == ["横の行", "縦の行"]
+        assert overlay.isVisible()
+        assert window.image_view.grab().toImage() != before
+        # Positions are the picture's pixels, so the box sits on the same spot
+        # of the page whatever the zoom: the picture is 60 wide, the box
+        # starts 10 in.
+        shown = window.image_view.item.sceneBoundingRect()
+        box = overlay.mapToScene(overlay.lines[0][1].boundingRect()).boundingRect()
+        assert abs((box.left() - shown.left()) / shown.width() - 10 / 60) < 0.01
+        assert abs(box.width() / shown.width() - 40 / 60) < 0.01
+        window.image_view.original_size()
+        box = overlay.mapToScene(overlay.lines[0][1].boundingRect()).boundingRect()
+        shown = window.image_view.item.sceneBoundingRect()
+        assert abs(box.width() / shown.width() - 40 / 60) < 0.01
+        # Nothing is added to what can be scrolled.
+        assert window.image_view.sceneRect() == window.image_view.item.boundingRect()
+    finally:
+        window.close()
+
+
+def test_the_overlay_can_be_switched_off_and_goes_with_the_page(
+    tmp_path: Path, monkeypatch
+) -> None:
+    make_book(tmp_path / "book")
+    saved: list[ViewerSettings] = []
+    window = make_window(monkeypatch, reads=reading_of_two_lines)
+    monkeypatch.setattr(app_module, "save_settings", saved.append)
+    try:
+        window.show()
+        window.open_path(tmp_path / "book" / "1.png")
+        overlay = window.image_view.text_overlay
+        assert window.ocr_overlay_action.isChecked()
+
+        window.ocr_overlay_action.trigger()
+        assert saved[-1].ocr_overlay is False
+        window.ocr_action.trigger()
+        wait_for(lambda: window.ocr_dialog is not None)
+        # Held but not shown; ticking the entry again shows this same reading.
+        assert not overlay.isVisible() and len(overlay.lines) == 2
+        window.ocr_overlay_action.trigger()
+        assert overlay.isVisible() and len(overlay.lines) == 2
+
+        # Turned, the picture no longer matches the positions that were read.
+        window.rotate_right_action.trigger()
+        assert overlay.lines == []
+
+        window.ocr_action.trigger()
+        wait_for(lambda: len(overlay.lines) == 2)
+        window.navigate(1)
+        assert overlay.lines == []
+    finally:
+        window.close()
+
+
+def test_a_reader_without_positions_still_fills_the_dialog(tmp_path: Path, monkeypatch) -> None:
+    make_book(tmp_path / "book")
+    window = make_window(monkeypatch, reads=lambda _image: "text only")
+    try:
+        window.open_path(tmp_path / "book" / "1.png")
+        window.ocr_action.trigger()
+        wait_for(lambda: window.ocr_dialog is not None)
+        assert window.ocr_dialog.editor.toPlainText() == "text only"
+        assert window.image_view.text_overlay.lines == []
+    finally:
+        window.close()
+
+
+def test_the_view_menu_holds_the_ocr_entries_and_right_click_only_the_reading(
+    tmp_path: Path, monkeypatch
+) -> None:
+    make_book(tmp_path / "book")
+    shown: list[list] = []
+
+    class RecordingMenu(app_module.QMenu):
+        def exec(self, *_args):
+            shown.append(self.actions())
+            return None
+
+    window = make_window(monkeypatch)
+    monkeypatch.setattr(app_module, "QMenu", RecordingMenu)
+    try:
+        window.open_path(tmp_path / "book" / "1.png")
+        assert window.ocr_menu.title() == "文字認識（OCR）"
+        assert window.ocr_menu.menuAction() in window.view_menu.actions()
+        assert window.ocr_menu.actions() == [window.ocr_action, window.ocr_overlay_action]
+
+        window.show_media_menu(window.pos())
+        assert window.ocr_action in shown[-1]
+        # Set once, not reached for while reading: not in the right-click menu.
+        assert window.ocr_overlay_action not in shown[-1]
+    finally:
+        window.close()
+
+
+def test_the_ocr_submenu_is_hidden_where_there_is_no_ocr(monkeypatch) -> None:
+    window = make_window(monkeypatch, available=False)
+    try:
+        assert not window.ocr_menu.menuAction().isVisible()
+    finally:
+        window.close()
+
+
+def test_the_toolbar_has_a_button_that_reads_the_page(tmp_path: Path, monkeypatch) -> None:
+    make_book(tmp_path / "book")
+    window = make_window(monkeypatch, reads=lambda _image: "text")
+    try:
+        window.show()
+        window.open_path(tmp_path / "book" / "1.png")
+        button = window.toolbar.widgetForAction(window.ocr_action)
+        assert button is not None and button.isVisible()
+        # Short on the button, in full in the menu.
+        assert button.text() == "文字認識"
+        assert window.ocr_action.text() == "文字を読み取る（OCR）"
+        button.click()
+        wait_for(lambda: window.ocr_dialog is not None)
+        assert window.ocr_dialog.editor.toPlainText() == "text"
+    finally:
+        window.close()
+
+
+def test_the_toolbar_button_is_absent_where_there_is_no_ocr(monkeypatch) -> None:
+    window = make_window(monkeypatch, available=False)
+    try:
+        window.show()
+        assert not window.toolbar.widgetForAction(window.ocr_action).isVisible()
+    finally:
+        window.close()
+
+
+
+def test_the_result_window_switches_the_overlay_off_and_on(tmp_path: Path, monkeypatch) -> None:
+    make_book(tmp_path / "book")
+    window = make_window(monkeypatch, reads=reading_of_two_lines)
+    try:
+        window.show()
+        window.open_path(tmp_path / "book" / "1.png")
+        # Nothing about the overlay on the toolbar: it would be there before
+        # anything had been read.
+        assert window.toolbar.widgetForAction(window.ocr_overlay_action) is None
+        window.ocr_action.trigger()
+        wait_for(lambda: window.ocr_dialog is not None)
+        overlay = window.image_view.text_overlay
+        box = window.ocr_dialog.overlay_box
+        assert box.text() == "画像に重ねて表示" and box.isChecked()
+        # Not modal: the picture can still be scrolled and zoomed beside it.
+        assert not window.ocr_dialog.isModal()
+        boxed = window.image_view.grab().toImage()
+
+        box.click()
+        # Off: the picture as it is, with the reading kept for switching back.
+        assert not overlay.isVisible() and len(overlay.lines) == 2
+        assert window.image_view.grab().toImage() != boxed
+        # The menu entry is the same switch, either way round.
+        assert not window.ocr_overlay_action.isChecked()
+
+        window.ocr_overlay_action.trigger()
+        assert box.isChecked() and overlay.isVisible()
+        assert window.image_view.grab().toImage() == boxed
+    finally:
+        window.close()
+
+
+def test_the_result_window_opens_with_the_saved_choice(tmp_path: Path, monkeypatch) -> None:
+    make_book(tmp_path / "book")
+    window = make_window(monkeypatch, reads=reading_of_two_lines)
+    try:
+        window.open_path(tmp_path / "book" / "1.png")
+        window.ocr_overlay_action.setChecked(False)
+        window.ocr_action.trigger()
+        wait_for(lambda: window.ocr_dialog is not None)
+        assert not window.ocr_dialog.overlay_box.isChecked()
+    finally:
+        window.close()

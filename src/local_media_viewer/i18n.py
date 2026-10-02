@@ -530,6 +530,22 @@ CATALOG: dict[str, dict[str, str]] = {
         CHINESE: "找不到收藏的文件夹。\n{path}",
         KOREAN: "즐겨찾기 폴더를 찾을 수 없습니다.\n{path}",
     },
+    "文字認識": {ENGLISH: "Read Text", CHINESE: "文字识别", KOREAN: "문자 인식"},
+    "画像に重ねて表示": {
+        ENGLISH: "Show over the picture",
+        CHINESE: "叠加显示在图片上",
+        KOREAN: "이미지 위에 겹쳐 표시",
+    },
+    "文字認識（OCR）": {
+        ENGLISH: "Text Recognition (OCR)",
+        CHINESE: "文字识别（OCR）",
+        KOREAN: "문자 인식（OCR）",
+    },
+    "読み取った文字を画像に重ねる": {
+        ENGLISH: "Show Read Text over the Picture",
+        CHINESE: "在图片上显示识别的文字",
+        KOREAN: "읽은 문자를 이미지 위에 표시",
+    },
     # PDF
     "PDFを開けません": {
         ENGLISH: "Cannot Open PDF",

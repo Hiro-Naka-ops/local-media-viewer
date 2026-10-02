@@ -68,6 +68,8 @@ class ViewerSettings:
     # shuffled order.
     slideshow_loop: bool = False
     slideshow_random: bool = False
+    # Draw what OCR read over the picture, as well as listing it in the dialog.
+    ocr_overlay: bool = True
     favorites: list[Favorite] = field(default_factory=list)
 
 

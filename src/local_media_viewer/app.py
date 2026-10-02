@@ -148,10 +148,11 @@ HUE_RANGE = (-30, 30)
 # far "pick a number" may go.
 SLIDESHOW_SECONDS = (1, 2, 3, 5, 10, 15, 30, 60)
 SLIDESHOW_LIMIT = 3600
-# Switched off for now: the user found the recognition too unreliable to offer
-# (2026-10-01). The code and its tests stay; this hides the menu entries and
-# the key. Set to True to bring it back.
-OCR_ENABLED = False
+# Hides the OCR menu entries and the key when False. Off for a day while the
+# reading was done by Windows' own OCR, which the user found too unreliable;
+# back on with the glyph-ocr library doing it (2026-10-02). Where that library
+# or its models are missing, ocr.available() hides the feature by itself.
+OCR_ENABLED = True
 
 # Qt's own strings (the Yes/No buttons, the colour dialog) come from these.
 QT_TRANSLATIONS = {"ja": "qtbase_ja", "zh": "qtbase_zh_CN", "ko": "qtbase_ko"}
@@ -380,6 +381,20 @@ class MainWindow(QMainWindow):
         self.ocr_reader = ocr.Reader()
         self.ocr_reader.ready.connect(self.show_read_text)
         self.ocr_dialog: ocr.TextDialog | None = None
+        # The reading drawn over the picture, beside the dialog that lists it.
+        # Switchable because the boxes cover the very text they report.
+        self.ocr_overlay_action = QAction(self)
+        self.ocr_overlay_action.setCheckable(True)
+        self.ocr_overlay_action.setChecked(bool(self.settings.ocr_overlay))
+        self.ocr_overlay_action.setVisible(self.ocr_offered())
+        self.ocr_overlay_action.toggled.connect(self.toggle_ocr_overlay)
+        self.image_view.text_overlay.setVisible(self.ocr_overlay_action.isChecked())
+        # 表示 → 文字認識（OCR）: the reading and its options together. The
+        # right-click menu carries only the reading itself; an option set once
+        # has no place among what is reached for while reading.
+        self.ocr_menu = QMenu(self)
+        self.ocr_menu.addActions([self.ocr_action, self.ocr_overlay_action])
+        self.ocr_menu.menuAction().setVisible(self.ocr_offered())
         self.create_page_actions()
         self.size_menu = self.create_size_menu()
         # Only offered from the right-click menu, which is the one menu left
@@ -466,6 +481,8 @@ class MainWindow(QMainWindow):
         self.toolbar.addActions([self.previous_action, self.next_action])
         self.toolbar.addSeparator()
         self.toolbar.addAction(self.enhance_action)
+        # Hidden with the action where there is no OCR to offer.
+        self.toolbar.addAction(self.ocr_action)
         self.toolbar.addAction(self.slideshow_button_action)
         # Hidden through the QActions addWidget/addSeparator hand back: a
         # toolbar re-shows a widget it holds whenever it lays itself out, so
@@ -639,6 +656,12 @@ class MainWindow(QMainWindow):
             tr("この画像のブロックノイズを消して解像度を上げる（表示のみ・元ファイルは変更しない）")
         )
         self.ocr_action.setText(tr("文字を読み取る（OCR）"))
+        # The toolbar shows the icon text: the menu wording is too long for a
+        # button among "前へ" and "次へ".
+        self.ocr_action.setIconText(tr("文字認識"))
+        self.ocr_action.setToolTip(f"{tr('文字を読み取る（OCR）')} (Ctrl+T)")
+        self.ocr_overlay_action.setText(tr("読み取った文字を画像に重ねる"))
+        self.ocr_menu.setTitle(tr("文字認識（OCR）"))
         if self.ocr_dialog is not None:
             self.ocr_dialog.retranslate()
         self.orientation_menu.setTitle(tr("回転・反転"))
@@ -1208,19 +1231,32 @@ class MainWindow(QMainWindow):
         self.ocr_reader.request(image)
         self.statusBar().showMessage(tr("文字を読み取っています…"))
 
-    def show_read_text(self, generation: int, text: str | None) -> None:
+    def toggle_ocr_overlay(self, visible: bool) -> None:
+        self.image_view.text_overlay.setVisible(visible)
+        if self.ocr_dialog is not None:
+            self.ocr_dialog.overlay_box.setChecked(visible)
+        self.persist_settings()
+
+    def show_read_text(self, generation: int, reading: ocr.Reading | None) -> None:
         # Against the reader's own count, which show_current's cancel() bumps:
         # a result already queued when the page was turned belongs to the old page.
         if generation != self.ocr_reader.generation:
             return
-        if text is None:
+        if reading is None:
             self.statusBar().showMessage(tr("文字を読み取れませんでした"), 5000)
             return
+        text = reading.text
+        # Set even while switched off, so ticking the entry shows this reading.
+        self.image_view.text_overlay.set_lines(reading.lines)
         if not text.strip():
             self.statusBar().showMessage(tr("文字が見つかりませんでした"), 5000)
             return
         if self.ocr_dialog is None:
             self.ocr_dialog = ocr.TextDialog(self)
+            # The switch for the boxes lives with the reading it belongs to,
+            # not on the toolbar, where it would sit before anything was read.
+            self.ocr_dialog.overlay_box.setChecked(self.ocr_overlay_action.isChecked())
+            self.ocr_dialog.overlay_box.toggled.connect(self.ocr_overlay_action.setChecked)
         names = " / ".join(self.files[page].name for page in self.displayed_pages or [self.index])
         self.ocr_dialog.show_text(names, text)
         self.statusBar().showMessage(
@@ -1812,7 +1848,7 @@ class MainWindow(QMainWindow):
         self.view_menu = bar.addMenu("")
         self.view_menu.addMenu(self.size_menu)
         self.view_menu.addMenu(self.orientation_menu)
-        self.view_menu.addAction(self.ocr_action)
+        self.view_menu.addMenu(self.ocr_menu)
         for group in (panels, drawing):
             self.view_menu.addSeparator()
             self.view_menu.addActions(group)
@@ -2429,6 +2465,7 @@ class MainWindow(QMainWindow):
             filmstrip_visible=self.filmstrip_action.isChecked(),
             toolbar_visible=self.toolbar_action.isChecked(),
             status_bar_visible=self.status_bar_action.isChecked(),
+            ocr_overlay=self.ocr_overlay_action.isChecked(),
             volume=self.volume_slider.value(),
             window_geometry=bytes(self.saveGeometry().toBase64()).decode("ascii"),
             # Still written, so an older copy of the app reads a sensible choice.

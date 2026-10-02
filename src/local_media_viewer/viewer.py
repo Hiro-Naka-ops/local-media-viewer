@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from local_media_viewer.textoverlay import TextOverlay
 
 # Drivers commonly map a tilt wheel onto the back/forward side buttons, so
 # those turn pages too.
@@ -290,6 +291,9 @@ class ImageView(QGraphicsView):
         self.pager = WheelPager()
         self.item = QGraphicsPixmapItem()
         self.scene().addItem(self.item)
+        # What OCR read, over the picture. A child of the picture, so it moves
+        # and zooms with it; render_at_scale keeps its scale in step.
+        self.text_overlay = TextOverlay(self.item)
         self.fit_mode = True
         # Which fit Space and a click return to from actual size.
         self.fit_kind = FIT_WINDOW
@@ -330,6 +334,9 @@ class ImageView(QGraphicsView):
                 transform.scale(-1, 1)
             pixmap = pixmap.transformed(transform)
         self.source_pixmap = pixmap
+        # Read from the picture that was on screen: another page, another
+        # frame, a turn or a filter all make the positions stale.
+        self.text_overlay.set_lines(())
         if self.fit_mode:
             self.fit_to_window()
         else:
@@ -492,6 +499,11 @@ class ImageView(QGraphicsView):
         else:
             self.item.setPixmap(self.source_pixmap)
             self.scale(scale, scale)
+        # The overlay is in the source's pixels; the picture item shows the
+        # source resampled by this much.
+        self.text_overlay.setScale(raster_scale)
+        # The picture alone: the overlay's outlines reach a little past it and
+        # would otherwise add a sliver of scrolling.
         self.scene().setSceneRect(self.item.boundingRect())
 
     def resampled_pixmap(self, width: int, height: int) -> QPixmap:

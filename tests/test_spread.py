@@ -270,7 +270,7 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
             [
                 window.size_menu.menuAction(),
                 window.orientation_menu.menuAction(),
-                window.ocr_action,
+                window.ocr_menu.menuAction(),
             ],
             panels,
             drawing,
@@ -287,8 +287,12 @@ def test_options_live_in_the_menu_bar(tmp_path: Path, monkeypatch) -> None:
         # What is left on the toolbar is paging, the per-picture clean-up and
         # the slideshow button (the video controls are hidden until a video
         # is open).
+        # The OCR button is left out: it shows only on a machine that has the
+        # OCR library, and tests/test_ocr.py covers it both ways.
         shown = [
-            a for a in window.toolbar.actions() if a.isVisible() and not a.isSeparator()
+            a
+            for a in window.toolbar.actions()
+            if a.isVisible() and not a.isSeparator() and a is not window.ocr_action
         ]
         assert shown == [
             window.previous_action,

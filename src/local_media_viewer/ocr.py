@@ -1,9 +1,15 @@
-"""Read the text in the picture on screen, with the OCR Windows itself ships.
+"""Read the text in the picture on screen.
 
-Nothing is bundled and nothing leaves the machine: Windows.Media.Ocr and the
-languages installed in Windows do the reading, reached through the small
-PyWinRT bindings. Where those are missing (macOS, or no OCR language
-installed) available() is False and the app simply does not offer the feature.
+The reading is done by glyph-ocr, the user's own offline library (RapidOCR on
+ONNX Runtime with a Japanese model): the OCR built into Windows, used first,
+dropped the dakuten off kana (まだ read as また) too often to be of use.
+Nothing leaves the machine. Where the library or its model files are missing,
+available() is False and the app simply does not offer the feature, so a
+build without them still runs.
+
+The Windows reader is kept below (recognize_with_windows) but nothing calls
+it: it read vertical text in better order, and which of the two stays is
+still to be settled on real pages.
 
 Only ever run on request, for the one picture on screen: it is not part of
 showing a page.
@@ -15,11 +21,13 @@ import sys
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import cache
+from pathlib import Path
 from typing import NamedTuple
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -30,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from local_media_viewer.i18n import tr
+from local_media_viewer.settings import settings_path
 
 # A gap between two words wider than this share of the line's thickness is a
 # real space. English words sit about 0.25-0.3 apart; the pieces Windows cuts
@@ -40,6 +49,24 @@ SPACE_GAP = 0.15
 # the comma; no space goes there, while "dog. The" and "価格: 1,980" keep theirs.
 CLOSING = ".,;:!?)]}\"'"
 OPENING = "([{\"'"
+# The folder holding glyph-ocr's three model files: inside a frozen build if
+# they were bundled, else beside the settings file.
+MODELS_FOLDER = "ocr-models"
+OCR_THREADS = 2
+
+
+class TextLine(NamedTuple):
+    """One recognised line and the four corners of where it stands, in the
+    pixels of the picture that was handed to recognize()."""
+
+    text: str
+    quad: tuple[tuple[float, float], ...]
+
+
+class Reading(NamedTuple):
+    text: str
+    # Empty from a reader that reports no positions.
+    lines: tuple[TextLine, ...] = ()
 
 
 class Word(NamedTuple):
@@ -107,8 +134,84 @@ def join_lines(lines: Sequence[Sequence[Word]]) -> str:
     return "\n".join(line for line in (join_words(words) for words in lines) if line)
 
 
+def model_directory() -> Path | None:
+    """Where the model files are, or None when no candidate folder has them."""
+    try:
+        from glyph_ocr.models import SPECS
+    except ImportError:
+        return None
+    candidates = [settings_path().parent / MODELS_FOLDER]
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        candidates.insert(0, Path(bundled) / MODELS_FOLDER)
+    for folder in candidates:
+        # Presence only: the library checks the hashes itself when it loads
+        # them, and hashing 14 MB here would be paid on every start.
+        if all((folder / name).is_file() for _stage, name, _sha256 in SPECS.values()):
+            return folder
+    return None
+
+
 @cache
 def engine():
+    """The glyph-ocr engine, or None where the library or its models are missing.
+
+    Building it loads nothing: the models are read on the first recognize().
+    """
+    folder = model_directory()
+    if folder is None:
+        return None
+    try:
+        from glyph_ocr import OcrEngine
+
+        return OcrEngine(model_dir=folder, threads=OCR_THREADS)
+    except (ImportError, OSError, ValueError):
+        return None
+
+
+def available() -> bool:
+    return engine() is not None
+
+
+def recognize(image: QImage) -> Reading:
+    """The text in a picture, one recognised line per line, and where each is.
+
+    Raises when it cannot be read at all (models damaged, picture refused).
+    Not for the UI thread: the first call loads the models and every call
+    takes around a second. Reader calls it from its worker.
+    """
+    reader = engine()
+    if reader is None or image.isNull():
+        raise OSError("OCR is not available")
+    from glyph_ocr.engine import MAX_PIXELS
+    from glyph_ocr.qt import qimage_to_pil
+
+    pixels = image.width() * image.height()
+    full_width = image.width()
+    if pixels > MAX_PIXELS:
+        # The library refuses anything larger; a spread of two big scans is.
+        scale = (MAX_PIXELS / pixels) ** 0.5
+        image = image.scaled(
+            int(image.width() * scale),
+            int(image.height() * scale),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    result = reader.recognize(qimage_to_pil(image))
+    # Positions come back in the pixels of what was read; the caller draws
+    # them over the picture it handed in, shrunk or not.
+    back = full_width / image.width()
+    return Reading(
+        result.text,
+        tuple(
+            TextLine(line.text, tuple((x * back, y * back) for x, y in line.quad))
+            for line in result.lines
+        ),
+    )
+
+
+@cache
+def windows_engine():
     """The Windows OCR engine for the user's own languages, or None."""
     if sys.platform != "win32":
         return None
@@ -121,19 +224,15 @@ def engine():
         return None
 
 
-def available() -> bool:
-    return engine() is not None
-
-
-def recognize(image: QImage) -> str:
-    """The text in a picture, one recognised line per line.
+def recognize_with_windows(image: QImage) -> str:
+    """The same reading by Windows' own OCR. Not in use; see the module note.
 
     Raises OSError when Windows cannot read it at all. Not for the UI
     thread: it waits for Windows, and Windows refuses to let a thread that
     runs a message loop do that ("Cannot call blocking method from
-    single-threaded apartment"). Reader calls it from its worker.
+    single-threaded apartment").
     """
-    reader = engine()
+    reader = windows_engine()
     if reader is None or image.isNull():
         raise OSError("OCR is not available")
     from winrt.windows.graphics.imaging import (
@@ -192,7 +291,7 @@ def recognize(image: QImage) -> str:
 class Reader(QObject):
     """Runs recognize() off the UI thread, one picture at a time.
 
-    `ready` carries the request's generation and the text, or None when the
+    `ready` carries the request's generation and the Reading, or None when the
     picture could not be read. As with Enhancer, a request is dropped once
     cancel() or a newer request bumps the generation, so a result never lands
     on a page it was not read from.
@@ -219,12 +318,15 @@ class Reader(QObject):
         if generation != self.generation:
             return
         try:
-            text = recognize(image)
-        except Exception:  # noqa: BLE001 - WinRT raises its own types; any failure is "unreadable"
-            text = None
+            reading = recognize(image)
+            if isinstance(reading, str):
+                # A reader that gives the text alone (the Windows one does).
+                reading = Reading(reading)
+        except Exception:  # noqa: BLE001 - the backends raise their own types; any failure is "unreadable"
+            reading = None
         if generation == self.generation and not self.closed:
             # Queued across threads by Qt, so the result lands on the UI thread.
-            self.ready.emit(generation, text)
+            self.ready.emit(generation, reading)
 
     def close(self) -> None:
         # Waits for a picture already in hand: destroying a QObject while a
@@ -232,6 +334,10 @@ class Reader(QObject):
         self.closed = True
         self.generation += 1
         self._executor.shutdown(wait=True, cancel_futures=True)
+        reader = engine()
+        if reader is not None:
+            # After the worker is done with it; lets go of the loaded models.
+            reader.close()
 
 
 class TextDialog(QDialog):
@@ -248,13 +354,18 @@ class TextDialog(QDialog):
         self.source.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.editor = QPlainTextEdit()
         self.copied = QLabel()
+        # Whether the reading is also drawn over the picture. Here, beside
+        # the text, because the boxes hide the lettering they report and are
+        # switched off and on while the two are compared.
+        self.overlay_box = QCheckBox()
         self.copy_button = QPushButton()
         self.copy_button.clicked.connect(self.copy_all)
         self.close_button = QPushButton()
         self.close_button.clicked.connect(self.close)
         buttons = QHBoxLayout()
-        buttons.addWidget(self.copied)
+        buttons.addWidget(self.overlay_box)
         buttons.addStretch(1)
+        buttons.addWidget(self.copied)
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.close_button)
         layout = QVBoxLayout(self)
@@ -265,6 +376,7 @@ class TextDialog(QDialog):
 
     def retranslate(self) -> None:
         self.setWindowTitle(tr("読み取った文字"))
+        self.overlay_box.setText(tr("画像に重ねて表示"))
         self.copy_button.setText(tr("すべてコピー"))
         self.close_button.setText(tr("閉じる"))
         self.copied.clear()
