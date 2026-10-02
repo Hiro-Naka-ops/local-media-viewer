@@ -475,3 +475,27 @@ def test_the_result_window_opens_with_the_saved_choice(tmp_path: Path, monkeypat
         assert not window.ocr_dialog.overlay_box.isChecked()
     finally:
         window.close()
+
+
+def test_the_vendored_library_is_the_one_installed() -> None:
+    """vendor/ carries the wheel for other machines and for builds; one copied
+    over without reinstalling (or the reverse) would test one version here and
+    ship another."""
+    import zipfile
+    from importlib import metadata
+
+    wheels = sorted((Path(__file__).resolve().parents[1] / "vendor").glob("glyph_ocr-*.whl"))
+    assert len(wheels) == 1, wheels
+    with zipfile.ZipFile(wheels[0]) as archive:
+        names = archive.namelist()
+        info = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        fields = archive.read(info).decode("utf-8").splitlines()
+    # Code only: the models are large and are not part of the wheel.
+    assert not any(name.endswith(".onnx") for name in names)
+    vendored = next(line.split(": ", 1)[1] for line in fields if line.startswith("Version: "))
+    assert vendored in wheels[0].name
+    try:
+        installed = metadata.version("glyph-ocr")
+    except metadata.PackageNotFoundError:
+        pytest.skip("glyph-ocr is not installed on this machine")
+    assert installed == vendored

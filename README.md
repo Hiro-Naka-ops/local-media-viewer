@@ -289,6 +289,13 @@ set PYTHONPATH=src
 python -m local_media_viewer
 ```
 
+文字認識（OCR）を使うときは、同梱のライブラリを入れ、モデル3ファイルを所定の場所に置きます
+（手順は [vendor/README.md](vendor/README.md)）。入れていない環境では OCR のメニューとボタンが出ないだけで、ほかは普通に動きます。
+
+```cmd
+py -3.14 -m pip install vendor\glyph_ocr-0.1.2-py3-none-any.whl
+```
+
 設定は `%LOCALAPPDATA%\LocalMediaViewer\settings.json` に保存します。
 表示オプション（表示位置の復帰・見開き・送り方向・表紙の単独表示・見開きのずらし位置・並び順）も併せて保存し、次回起動時に復元します。
 前回の続きから起動したときは、そのフォルダを閉じたときの見開きの組み方をそのまま復元します。
