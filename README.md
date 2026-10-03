@@ -323,11 +323,13 @@ Windows 版と Mac 版は GitHub Actions でまとめてビルドします。手
      Artifacts は **7日で自動削除** されるので、残したい版はリリースしてください
    - **リリースするバージョン**: `v1.2.0` の形で入力（公開するときは必須。既存のタグと同じものは使えません）。
      この番号がアプリに埋め込まれ、「更新を確認…」が最新版との比較に使います
-3. 完了すると（15分ほど）、リリースには次の3つが添付されます。
+3. 完了すると（15分ほど）、リリースには次の4つが添付されます。
    変更点の一覧は前回のリリースからのコミットをもとに自動で作られます
-   - `Local-Media-Viewer.exe`: Windows 版（単体EXE）
-   - `Local-Media-Viewer-macOS-arm64.zip`: Mac 版（Apple シリコン）
-   - `Local-Media-Viewer-macOS-x86_64.zip`: Mac 版（Intel）
+   - `Local-Media-Viewer.exe`: Windows 版（単体EXE。文字認識（OCR）入り）
+   - `Local-Media-Viewer-macOS-arm64.zip`: Mac 版（Apple シリコン。OCR 入り）
+   - `Local-Media-Viewer-macOS-x86_64.zip`: Mac 版（Intel。**OCR なし** — OCR の実行部品 ONNX Runtime に
+     Python 3.14 用の Intel Mac 版が無いため。ほかの機能は同じです）
+   - `THIRD-PARTY-NOTICES.txt`: 同梱しているライブラリとモデルのライセンス表示（アプリの中にも同じものが入っています）
 
 公開するときは、バージョンの形式と重複を最初に確かめ、Windows 版のテストがすべて通り、
 3つのビルドがすべて成功したときだけリリースを作ります。1つでも失敗したらリリースは作りません。
@@ -335,13 +337,29 @@ Windows 版と Mac 版は GitHub Actions でまとめてビルドします。手
 ### 手元で Windows EXE を作る場合
 
 ```cmd
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Local-Media-Viewer" --icon "assets/icon.ico" --paths "src" --exclude-module "numpy" "run_viewer.pyw"
+scripts\build_windows.cmd
 ```
 
-アイコンは `assets/icon.ico`（16〜256pxを内包）で、元データは `assets/icon.svg` です。
+GitHub Actions もこのスクリプトでビルドしているので、手元で作っても配布版と同じものになります。
+テストを通してからビルドし、`dist` に単体EXEと `THIRD-PARTY-NOTICES.txt` を作ります（`--skip-tests` でテストを省略）。
+必要なパッケージが足りないときは、入れるコマンドを表示して止まります。
 
-`dist` には単体EXEが生成されます。EXEはGitへコミットしません（配布は上の GitHub Actions で行います）。
-ビルドではアプリが使用しないNumPyを除外し、単体EXEの容量を抑えます。Qtと動画再生部品は機能上必要なため同梱します。
+- 文字認識（OCR）のライブラリ（`vendor/` の wheel）とモデル（`vendor/ocr-models`）を同梱します。EXE は約 145MB です
+- 同梱物のライセンス表示は `scripts/collect_licenses.py` がその場で集めて EXE に入れます
+- OpenCV が持っている動画用の FFmpeg（LGPL）と、OCR エンジンの使わない中国語モデルは除外します
+  （`scripts/pyinstaller-hooks/`）
+- アイコンは `assets/icon.ico`（16〜256pxを内包）で、元データは `assets/icon.svg` です
+
+EXEはGitへコミットしません（配布は上の GitHub Actions で行います）。
+
+### ライセンス
+
+- 同梱するライブラリとモデルのライセンス表示はすべて `THIRD-PARTY-NOTICES.txt` にまとめ、アプリに同梱し、リリースにも添付します
+- OCR のモデル3点は Apache License 2.0（PaddleOCR のモデルを RapidOCR が ONNX に変換したもの）。
+  ライセンス全文と帰属表示は `vendor/ocr-models/` にあります
+- Qt（PySide6）と、動画再生に使う FFmpeg は LGPL-3.0 です。このリポジトリでアプリ全体のソースとビルド手順を
+  公開しているので、利用者は改変したライブラリでアプリを作り直せます
+- HEIC の読み込みには読み込み専用の pi-heif を使います（pillow-heif は GPL の x265 エンコーダーを同梱するため使いません）
 
 ## Mac版（.app）の作成
 

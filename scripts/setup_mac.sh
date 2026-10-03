@@ -53,7 +53,16 @@ echo "Using $("$PYTHON" --version 2>&1) at $PYTHON"
 rm -rf .venv
 "$PYTHON" -m venv .venv
 .venv/bin/python3 -m pip install --upgrade pip
-.venv/bin/python3 -m pip install "Pillow==12.1.1" "pillow-heif==1.8.0" "PySide6==6.10.2" "pyinstaller==6.19.0"
+.venv/bin/python3 -m pip install "Pillow==12.1.1" "pi-heif==1.4.0" "PySide6==6.10.2" "pyinstaller==6.19.0"
+
+# The OCR library kept in vendor/ (its models are in vendor/ocr-models). Its
+# engine, ONNX Runtime, has no build for Intel Macs on Python 3.14, so there
+# the app is built and run without OCR, which it then simply does not offer.
+if [ "$(uname -m)" = "arm64" ]; then
+    .venv/bin/python3 -m pip install vendor/glyph_ocr-*.whl
+else
+    echo "Intel Mac: the OCR library has no ONNX Runtime to run on here; building without OCR."
+fi
 
 # build_mac.sh signs the .app so macOS's privacy (TCC) prompts — e.g. for
 # reading the Documents/Desktop folders, or for the widget's shared App

@@ -1,7 +1,6 @@
 import unicodedata
 from pathlib import Path
 
-from PIL import Image
 from PySide6.QtWidgets import QApplication
 
 import local_media_viewer.app as app_module
@@ -18,8 +17,13 @@ def make_window(monkeypatch) -> app_module.MainWindow:
     return app_module.MainWindow()
 
 
+DATA = Path(__file__).resolve().parent / "data"
+
+
 def save_heic(path: Path, color: str) -> None:
-    Image.new("RGB", (40, 30), color).save(path)
+    """A 40x30 picture of one colour, as HEIC. Copied from tests/data: the
+    app's HEIC support (pi-heif) only decodes, so it cannot write one."""
+    path.write_bytes((DATA / f"{color}.heic").read_bytes())
 
 
 def test_iphone_photos_are_listed_and_decoded(tmp_path: Path) -> None:

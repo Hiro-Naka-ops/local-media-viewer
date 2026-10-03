@@ -9,7 +9,7 @@ from functools import cmp_to_key
 from pathlib import Path
 from typing import Iterable, Iterator
 
-# HEIC / HEIF (iPhone photos) are decoded by pillow-heif; see preloader.py.
+# HEIC / HEIF (iPhone photos) are decoded by pi-heif; see preloader.py.
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
 }

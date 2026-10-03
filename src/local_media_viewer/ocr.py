@@ -50,8 +50,11 @@ SPACE_GAP = 0.15
 CLOSING = ".,;:!?)]}\"'"
 OPENING = "([{\"'"
 # The folder holding glyph-ocr's three model files: inside a frozen build if
-# they were bundled, else beside the settings file.
+# they were bundled, else beside the settings file, else the copy the
+# repository carries (vendor/ocr-models), so a run from a fresh checkout reads
+# text once the library is installed.
 MODELS_FOLDER = "ocr-models"
+CHECKOUT_MODELS = Path(__file__).resolve().parents[2] / "vendor" / MODELS_FOLDER
 OCR_THREADS = 2
 
 
@@ -140,7 +143,7 @@ def model_directory() -> Path | None:
         from glyph_ocr.models import SPECS
     except ImportError:
         return None
-    candidates = [settings_path().parent / MODELS_FOLDER]
+    candidates = [settings_path().parent / MODELS_FOLDER, CHECKOUT_MODELS]
     bundled = getattr(sys, "_MEIPASS", None)
     if bundled:
         candidates.insert(0, Path(bundled) / MODELS_FOLDER)

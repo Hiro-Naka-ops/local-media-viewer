@@ -19,6 +19,21 @@ PYTHON=.venv/bin/python3
 mkdir -p build
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src "$PYTHON" scripts/render_icon.py build/icon-1024.png
 
+# The notices of everything bundled (Python, Qt, the OCR stack, the models),
+# as their licenses require; they go inside the app.
+"$PYTHON" scripts/collect_licenses.py build/THIRD-PARTY-NOTICES.txt
+
+# With the OCR library installed (setup_mac.sh does on Apple silicon), the
+# models from vendor/ go in too, and scripts/pyinstaller-hooks keeps
+# RapidOCR's unused Chinese models out. Without it (Intel) numpy, which only
+# the OCR needs, is left out as before; the app then hides the feature.
+if "$PYTHON" -c "import glyph_ocr, rapidocr" 2>/dev/null; then
+    set -- --additional-hooks-dir scripts/pyinstaller-hooks --add-data "vendor/ocr-models:ocr-models"
+else
+    echo "OCR library not installed: building without OCR." >&2
+    set -- --exclude-module numpy
+fi
+
 # --windowed makes a .app bundle. Kept as a folder bundle (no --onefile): a
 # one-file app unpacks itself on every launch and macOS discourages it.
 "$PYTHON" -m PyInstaller --noconfirm --clean --windowed \
@@ -26,7 +41,8 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src "$PYTHON" scripts/render_icon.py build/
     --osx-bundle-identifier "io.github.local-media-viewer" \
     --icon build/icon-1024.png \
     --paths src \
-    --exclude-module numpy \
+    --add-data "build/THIRD-PARTY-NOTICES.txt:." \
+    "$@" \
     run_viewer.pyw
 
 # Registers the custom URL scheme the Mac widget (mac-widget/) uses to open a

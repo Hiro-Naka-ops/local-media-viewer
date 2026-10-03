@@ -208,6 +208,7 @@ def test_it_is_not_offered_without_the_model_files(tmp_path: Path, monkeypatch) 
     from glyph_ocr.models import SPECS
 
     monkeypatch.setattr(ocr, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(ocr, "CHECKOUT_MODELS", tmp_path / "no checkout")
     assert ocr.model_directory() is None
 
     folder = tmp_path / ocr.MODELS_FOLDER
@@ -219,6 +220,19 @@ def test_it_is_not_offered_without_the_model_files(tmp_path: Path, monkeypatch) 
     assert ocr.model_directory() is None
     (folder / names[-1]).write_bytes(b"")
     assert ocr.model_directory() == folder
+
+
+def test_a_run_from_the_repository_uses_the_models_it_carries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pytest.importorskip("glyph_ocr")
+    from glyph_ocr.models import SPECS, digest
+
+    # The copy in vendor/ is the real set, byte for byte what the library expects.
+    for _stage, name, sha256 in SPECS.values():
+        assert digest(ocr.CHECKOUT_MODELS / name) == sha256
+    monkeypatch.setattr(ocr, "settings_path", lambda: tmp_path / "settings.json")
+    assert ocr.model_directory() == ocr.CHECKOUT_MODELS
 
 
 def test_the_key_works_in_full_screen(monkeypatch) -> None:

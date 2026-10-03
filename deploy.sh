@@ -63,6 +63,7 @@ area_name() {
         .github/*|scripts/*|*.spec)           echo "ビルド設定" ;;
         deploy.sh)                            echo "deploy スクリプト" ;;
         assets/*)                             echo "画像素材" ;;
+        vendor/*)                             echo "OCRライブラリ・モデル" ;;
         pyproject.toml)                       echo "依存関係" ;;
         *.md)                                 echo "ドキュメント" ;;
         *)                                    echo "その他" ;;

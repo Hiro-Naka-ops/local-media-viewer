@@ -4,6 +4,10 @@ name: Build and release
 # Windows EXE and the Mac apps and keeps them as run artifacts; only a run with
 # "release" ticked also publishes them as a GitHub Release, so trying a build
 # out never creates a release by accident.
+#
+# The builds themselves are scripts/build_windows.cmd and scripts/build_mac.sh,
+# the same scripts used on a desk, so a local build matches a released one.
+# This file only prepares each runner and hands over to them.
 on:
   workflow_dispatch:
     inputs:
@@ -18,9 +22,13 @@ on:
 
 env:
   PYTHON_VERSION: "3.14"
-  # Keep in step with pyproject.toml and scripts/build_mac.sh. The Windows-only
-  # packages (OCR) are in scripts/requirements-windows.txt.
-  REQUIREMENTS: Pillow==12.1.1 pillow-heif==1.8.0 PySide6==6.10.2
+  # Keep in step with pyproject.toml and scripts/setup_mac.sh. The Windows-only
+  # packages are in scripts/requirements-windows.txt; the OCR library is the
+  # wheel in vendor/ (it brings its own dependencies).
+  REQUIREMENTS: Pillow==12.1.1 pi-heif==1.4.0 PySide6==6.10.2
+  BUILD_TOOLS: pytest==9.0.2 pyinstaller==6.19.0
+  # The timeline test follows the real mouse cursor and is known to flake.
+  FLAKY_TEST: tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades
 
 jobs:
   check:
@@ -46,6 +54,9 @@ jobs:
   windows:
     needs: check
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash  # word-splits the package lists; expands vendor/*.whl
     steps:
       - uses: actions/checkout@v7
 
@@ -54,10 +65,10 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install
-        shell: bash  # word-splits $REQUIREMENTS into one argument per package
         run: |
-          python -m pip install $REQUIREMENTS pytest==9.0.2 pyinstaller==6.19.0
+          python -m pip install $REQUIREMENTS $BUILD_TOOLS
           python -m pip install -r scripts/requirements-windows.txt
+          python -m pip install vendor/glyph_ocr-*.whl
 
       - name: Stamp the release version
         # The app compares this with the latest release ("更新を確認…"); a trial
@@ -67,29 +78,32 @@ jobs:
 
       - name: Test
         # Windows is the main platform, so a failure here stops the release.
-        # The timeline test follows the real mouse cursor and is known to flake.
-        # -v -rf and the saved log feed the annotations step below.
-        shell: bash
+        # With the OCR library installed, the real recognition tests run too
+        # (they read the models in vendor/ocr-models). -v -rf and the saved
+        # log feed the annotations step below.
         run: |
           set -o pipefail
-          python -X faulthandler -m pytest -v -rf \
-            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades \
-            2>&1 | tee pytest.log
+          python -X faulthandler -m pytest -v -rf --deselect "$FLAKY_TEST" 2>&1 | tee pytest.log
 
       - name: Name failing tests in the annotations
         if: always()
         run: python scripts/ci_annotate.py pytest.log windows
 
       - name: Build
-        run: >
-          python -m PyInstaller --noconfirm --clean --onefile --windowed
-          --name Local-Media-Viewer --icon assets/icon.ico --paths src
-          --exclude-module numpy run_viewer.pyw
+        # BUILD_PYTHON: the interpreter the packages above went into.
+        shell: cmd
+        env:
+          BUILD_PYTHON: python
+        run: scripts\build_windows.cmd --skip-tests
 
       - uses: actions/upload-artifact@v7
         with:
           name: Local-Media-Viewer-Windows
-          path: dist/Local-Media-Viewer.exe
+          # The notices go out beside the EXE: a single-file EXE keeps its own
+          # copy where nobody can see it.
+          path: |
+            dist/Local-Media-Viewer.exe
+            dist/THIRD-PARTY-NOTICES.txt
           # A trial build is looked at within days, and a released one lives on
           # in the release, so there is no point keeping these for 90 days.
           retention-days: 7
@@ -102,7 +116,7 @@ jobs:
         include:
           - runner: macos-15        # Apple silicon (M1 and later)
             arch: arm64
-          - runner: macos-15-intel  # Intel Macs
+          - runner: macos-15-intel  # Intel Macs: built without OCR, see Install
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -111,6 +125,20 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        # Into .venv/, where build_mac.sh builds from; the tests run from it
+        # too, so they see exactly what is bundled. Made here rather than with
+        # setup_mac.sh, whose signing certificate needs a login keychain the
+        # runner lacks (build_mac.sh then signs ad hoc). The OCR library only
+        # on Apple silicon: its engine, ONNX Runtime, has no Intel Mac build
+        # for this Python, and the app hides OCR where it is missing.
+        run: |
+          python -m venv .venv
+          .venv/bin/python3 -m pip install $REQUIREMENTS $BUILD_TOOLS
+          if [ "${{ matrix.arch }}" = arm64 ]; then
+            .venv/bin/python3 -m pip install vendor/glyph_ocr-*.whl
+          fi
 
       - name: Stamp the release version
         if: inputs.release
@@ -122,10 +150,8 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          python -m pip install $REQUIREMENTS pytest==9.0.2
-          QT_QPA_PLATFORM=offscreen python -X faulthandler -m pytest -v -rf \
-            --deselect tests/test_viewer_controls.py::test_video_timeline_overlay_shows_and_fades \
-            2>&1 | tee pytest.log
+          QT_QPA_PLATFORM=offscreen .venv/bin/python3 -X faulthandler -m pytest -v -rf \
+            --deselect "$FLAKY_TEST" 2>&1 | tee pytest.log
 
       - name: Name failing tests in the annotations
         # A job log needs signing in to download, even on a public repository;
@@ -133,14 +159,7 @@ jobs:
         run: python scripts/ci_annotate.py pytest.log "mac ${{ matrix.arch }}"
 
       - name: Build
-        # build_mac.sh builds from .venv/. Made here rather than with
-        # setup_mac.sh, whose signing certificate needs a login keychain the
-        # runner lacks; without it build_mac.sh signs ad hoc.
-        shell: bash  # word-splits $REQUIREMENTS into one argument per package
-        run: |
-          python -m venv .venv
-          .venv/bin/python3 -m pip install $REQUIREMENTS pyinstaller==6.19.0
-          sh scripts/build_mac.sh
+        run: sh scripts/build_mac.sh
 
       - uses: actions/upload-artifact@v7
         with:
